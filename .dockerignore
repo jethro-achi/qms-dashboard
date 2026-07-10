@@ -1,0 +1,23 @@
+# Keep the build context small and secrets out of the image.
+node_modules
+.next
+.git
+.gitignore
+
+# Local runtime state & secrets — NEVER bake these into an image.
+data
+.env
+.env.local
+.env*.local
+*.pem
+
+# Docs / editor / OS cruft not needed to build
+docs
+*.md
+!README.md
+.vscode
+.idea
+.DS_Store
+npm-debug.log*
+coverage
+*.tsbuildinfo

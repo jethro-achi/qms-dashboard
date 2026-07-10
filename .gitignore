@@ -1,0 +1,26 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# runtime setup — created by the /setup wizard, contains DB credentials.
+# Must NEVER be committed. Mount it as a volume in production instead.
+/data/
+
+# env
+.env
+.env.local
+.env*.local
+
+# misc
+*.pem
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

@@ -1,0 +1,77 @@
+# =============================================================================
+# QMS Analytics Dashboard — one-command stack
+#
+#   cp .env.example .env      # then edit secrets/passwords
+#   docker compose up -d --build
+#   open http://localhost:3000  ->  first run redirects to /setup
+#
+# Services:
+#   app  — the dashboard (built from ./Dockerfile), state on the qms_data volume
+#   db   — MySQL 8 hosting BOTH the application DB and (optionally) the QMS DB
+#
+# In a real bank deployment the QMS side is the bank's READ-ONLY replica; point
+# QMS_DB_HOST at it in .env and you can delete the `db` service if you host the
+# application database elsewhere too.
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qms-dashboard:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # State volume (overrides the image default; kept explicit here).
+      APP_CONFIG_DIR: /var/lib/qms-dashboard
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      # ALL persistent app state (DB config, generated reports, message
+      # attachments, uploaded logo) lives under this one directory.
+      - qms_data:/var/lib/qms-dashboard
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      # Application database + a least-privilege user the /setup wizard will use.
+      MYSQL_DATABASE: ${APP_DB_NAME:-appdb}
+      MYSQL_USER: ${APP_DB_USER:-app_user}
+      MYSQL_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Runs once, on first initialization of an empty data dir: creates the
+      # `qms` database and a SELECT-only user for the read side.
+      - ./deploy/mysql-init:/docker-entrypoint-initdb.d:ro
+    # Not published to the host by default — only the app container needs it.
+    # Uncomment to inspect from your workstation during setup.
+    # ports:
+    #   - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  qms_data:
+  mysql_data:
