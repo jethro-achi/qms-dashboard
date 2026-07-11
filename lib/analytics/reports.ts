@@ -296,22 +296,101 @@ export async function getDataRefresh(filters: AnalyticsFilters, principal: Princ
   }));
 }
 
-// ---- Agent activity (login/logout + current availability) -------------------
+// ---- Agent activity (login/logout + availability durations) -----------------
+// The QMS `logs` table records only Login/Logout events (no break toggles), so
+// "available" here means time an agent was logged in: we pair each successful
+// "Teller Login"/"Dashboard login" with the next "Logout" and sum the sessions.
+// "Unavailable" is the idle time *between* sessions within the agent's observed
+// span (first event → last event) — i.e. gaps when they were logged out but
+// still around that day. Both are reported over the last 30 days of activity.
+
+export interface AgentAvail {
+  agent: string;
+  availableMin: number; // logged-in minutes (summed login→logout sessions)
+  unavailableMin: number; // idle minutes between sessions in the observed span
+  sessions: number;
+  lastSeen: string | null;
+}
 
 export interface AgentActivity {
   logins: number;
+  totalAgents: number;
   activeStaff: number;
   inactiveStaff: number;
+  availability: AgentAvail[];
   logs: { date: string; agent: string; action: string; details: string }[];
 }
 
+interface SessionEventRow extends RowDataPacket {
+  uid: string | null;
+  agent: string;
+  action: string;
+  createdAt: string | Date;
+}
+
+const isLoginAction = (a: string) => a === "Teller Login" || a === "Dashboard login";
+
+/** Pair login/logout events per agent into available + unavailable minutes. */
+function computeAvailability(rows: SessionEventRow[]): AgentAvail[] {
+  const byAgent = new Map<string, { name: string; events: { t: number; login: boolean }[] }>();
+  for (const r of rows) {
+    if (!r.uid) continue; // system events have no agent to attribute to
+    const t = new Date(r.createdAt).getTime();
+    if (isNaN(t)) continue;
+    const g = byAgent.get(r.uid) ?? { name: r.agent, events: [] };
+    g.events.push({ t, login: isLoginAction(r.action) });
+    byAgent.set(r.uid, g);
+  }
+
+  const out: AgentAvail[] = [];
+  for (const { name, events } of byAgent.values()) {
+    events.sort((a, b) => a.t - b.t);
+    const first = events[0].t;
+    const last = events[events.length - 1].t;
+    let availableMs = 0;
+    let sessions = 0;
+    let openLogin: number | null = null;
+    for (const e of events) {
+      if (e.login) {
+        if (openLogin === null) openLogin = e.t; // start a session (ignore re-login)
+      } else if (openLogin !== null) {
+        availableMs += e.t - openLogin; // close the session on logout
+        sessions += 1;
+        openLogin = null;
+      }
+    }
+    // Still logged in at the end of the window → count up to their last event.
+    if (openLogin !== null && last > openLogin) {
+      availableMs += last - openLogin;
+      sessions += 1;
+    }
+    const spanMs = Math.max(0, last - first);
+    const availableMin = Math.round(availableMs / 60000);
+    const unavailableMin = Math.max(0, Math.round((spanMs - availableMs) / 60000));
+    out.push({ agent: name, availableMin, unavailableMin, sessions, lastSeen: new Date(last).toISOString() });
+  }
+  // Most active first.
+  out.sort((a, b) => b.availableMin - a.availableMin);
+  return out;
+}
+
 export async function getAgentActivity(): Promise<AgentActivity> {
-  const [loginRows, counterRows, logRows] = await Promise.all([
+  const [loginRows, totalRows, counterRows, sessionRows, logRows] = await Promise.all([
     qmsQuery<RowDataPacket & { n: number }>(
       "SELECT COUNT(*) n FROM logs WHERE details LIKE 'success%' AND action IN ('Teller Login','Dashboard login')",
     ),
+    qmsQuery<RowDataPacket & { n: number }>("SELECT COUNT(DISTINCT userId) n FROM counters"),
     qmsQuery<RowDataPacket & { available: number; agents: number }>(
       "SELECT available, COUNT(DISTINCT userId) agents FROM counters GROUP BY available",
+    ),
+    // Successful login/logout events over the last 30 days of activity, for pairing.
+    qmsQuery<SessionEventRow>(
+      `SELECT l.userId uid, COALESCE(u.username,'—') agent, l.action, l.createdAt
+         FROM logs l LEFT JOIN users u ON u.id = l.userId
+        WHERE l.details LIKE 'success%'
+          AND l.action IN ('Teller Login','Dashboard login','Logout')
+          AND l.createdAt >= (SELECT DATE_SUB(MAX(createdAt), INTERVAL 30 DAY) FROM logs)
+        ORDER BY l.userId, l.createdAt`,
     ),
     qmsQuery<RowDataPacket & { createdAt: string; agent: string; action: string; details: string }>(
       `SELECT l.createdAt, COALESCE(u.username,'system') agent, l.action, l.details
@@ -323,8 +402,10 @@ export async function getAgentActivity(): Promise<AgentActivity> {
   const inactive = counterRows.find((r) => Number(r.available) === 0)?.agents ?? 0;
   return {
     logins: Number(loginRows[0]?.n ?? 0),
+    totalAgents: Number(totalRows[0]?.n ?? 0),
     activeStaff: Number(active),
     inactiveStaff: Number(inactive),
+    availability: computeAvailability(sessionRows),
     logs: logRows.map((r) => ({
       date: new Date(r.createdAt).toISOString(),
       agent: r.agent,

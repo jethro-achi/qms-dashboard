@@ -29,7 +29,8 @@ export type AuditAction =
   | "USER_DELETE"
   | "PASSWORD_RESET"
   | "SETTINGS_CHANGE"
-  | "REPORT_SCHEDULE";
+  | "REPORT_SCHEDULE"
+  | "REPORT_SHARE";
 
 /** Human labels for each action, used by the audit viewer. */
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -47,6 +48,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   PASSWORD_RESET: "Reset password",
   SETTINGS_CHANGE: "Changed settings",
   REPORT_SCHEDULE: "Report schedule",
+  REPORT_SHARE: "Shared report",
 };
 
 export interface AuditEntry {

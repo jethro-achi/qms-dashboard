@@ -15,6 +15,16 @@ const CreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   reportType: z.enum(PERIOD_TYPES as unknown as [string, ...string[]]),
   format: z.enum(REPORT_FORMATS as unknown as [string, ...string[]]),
+  timing: z
+    .object({
+      runHour: z.number().int().min(0).max(23),
+      runMinute: z.number().int().min(0).max(59),
+      dayOfMonth: z.number().int().min(1).max(31),
+      monthOfYear: z.number().int().min(1).max(12),
+    })
+    .partial()
+    .optional(),
+  recipientIds: z.array(z.number().int().positive()).max(100).optional(),
 });
 
 async function gate() {
@@ -48,9 +58,12 @@ export async function POST(req: Request) {
     name: parsed.data.name,
     reportType: parsed.data.reportType as (typeof PERIOD_TYPES)[number],
     format: parsed.data.format as (typeof REPORT_FORMATS)[number],
+    timing: parsed.data.timing,
+    recipientIds: parsed.data.recipientIds,
   });
   await auditFromRequest(req, user.id, "REPORT_SCHEDULE", "report-schedule", {
     name: parsed.data.name, reportType: parsed.data.reportType, format: parsed.data.format,
+    timing: parsed.data.timing, recipients: parsed.data.recipientIds?.length ?? 0,
   });
   return NextResponse.json({ schedules: await listSchedules(user.id) }, { status: 201 });
 }

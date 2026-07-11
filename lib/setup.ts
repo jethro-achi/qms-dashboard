@@ -80,15 +80,19 @@ const DDL: Record<DbEngine, string[]> = {
        setting_value VARCHAR(255) NOT NULL
      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS app_report_schedules (
-       id          BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-       user_id     BIGINT UNSIGNED NOT NULL,
-       name        VARCHAR(120) NOT NULL,
-       report_type VARCHAR(20) NOT NULL,
-       format      VARCHAR(8) NOT NULL,
-       is_active   TINYINT(1) NOT NULL DEFAULT 1,
-       next_run_at DATETIME NOT NULL,
-       last_run_at DATETIME NULL,
-       created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       id            BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+       user_id       BIGINT UNSIGNED NOT NULL,
+       name          VARCHAR(120) NOT NULL,
+       report_type   VARCHAR(20) NOT NULL,
+       format        VARCHAR(8) NOT NULL,
+       is_active     TINYINT(1) NOT NULL DEFAULT 1,
+       run_hour      INT NOT NULL DEFAULT 6,
+       run_minute    INT NOT NULL DEFAULT 0,
+       day_of_month  INT NOT NULL DEFAULT 1,
+       month_of_year INT NOT NULL DEFAULT 1,
+       next_run_at   DATETIME NOT NULL,
+       last_run_at   DATETIME NULL,
+       created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
        FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
        INDEX idx_sched_due (is_active, next_run_at)
      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -104,6 +108,22 @@ const DDL: Record<DbEngine, string[]> = {
        created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
        FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE,
        INDEX idx_genrep_user (user_id, created_at)
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS app_report_recipients (
+       schedule_id BIGINT UNSIGNED NOT NULL,
+       user_id     BIGINT UNSIGNED NOT NULL,
+       PRIMARY KEY (schedule_id, user_id),
+       FOREIGN KEY (schedule_id) REFERENCES app_report_schedules(id) ON DELETE CASCADE,
+       FOREIGN KEY (user_id)     REFERENCES app_users(id) ON DELETE CASCADE
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS app_report_shares (
+       report_id  BIGINT UNSIGNED NOT NULL,
+       user_id    BIGINT UNSIGNED NOT NULL,
+       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (report_id, user_id),
+       FOREIGN KEY (report_id) REFERENCES app_generated_reports(id) ON DELETE CASCADE,
+       FOREIGN KEY (user_id)   REFERENCES app_users(id) ON DELETE CASCADE,
+       INDEX idx_share_user (user_id)
      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ],
   mssql: [
@@ -185,15 +205,19 @@ const DDL: Record<DbEngine, string[]> = {
      )`,
     `IF OBJECT_ID(N'dbo.app_report_schedules', N'U') IS NULL
      CREATE TABLE app_report_schedules (
-       id          BIGINT IDENTITY(1,1) PRIMARY KEY,
-       user_id     BIGINT NOT NULL,
-       name        NVARCHAR(120) NOT NULL,
-       report_type NVARCHAR(20) NOT NULL,
-       format      NVARCHAR(8) NOT NULL,
-       is_active   BIT NOT NULL DEFAULT 1,
-       next_run_at DATETIME2 NOT NULL,
-       last_run_at DATETIME2 NULL,
-       created_at  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+       id            BIGINT IDENTITY(1,1) PRIMARY KEY,
+       user_id       BIGINT NOT NULL,
+       name          NVARCHAR(120) NOT NULL,
+       report_type   NVARCHAR(20) NOT NULL,
+       format        NVARCHAR(8) NOT NULL,
+       is_active     BIT NOT NULL DEFAULT 1,
+       run_hour      INT NOT NULL DEFAULT 6,
+       run_minute    INT NOT NULL DEFAULT 0,
+       day_of_month  INT NOT NULL DEFAULT 1,
+       month_of_year INT NOT NULL DEFAULT 1,
+       next_run_at   DATETIME2 NOT NULL,
+       last_run_at   DATETIME2 NULL,
+       created_at    DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
        FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
      )`,
     `IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_sched_due' AND object_id = OBJECT_ID('dbo.app_report_schedules'))
@@ -213,6 +237,25 @@ const DDL: Record<DbEngine, string[]> = {
      )`,
     `IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_genrep_user' AND object_id = OBJECT_ID('dbo.app_generated_reports'))
      CREATE INDEX idx_genrep_user ON app_generated_reports(user_id, created_at)`,
+    `IF OBJECT_ID(N'dbo.app_report_recipients', N'U') IS NULL
+     CREATE TABLE app_report_recipients (
+       schedule_id BIGINT NOT NULL,
+       user_id     BIGINT NOT NULL,
+       PRIMARY KEY (schedule_id, user_id),
+       FOREIGN KEY (schedule_id) REFERENCES app_report_schedules(id) ON DELETE CASCADE,
+       FOREIGN KEY (user_id)     REFERENCES app_users(id)
+     )`,
+    `IF OBJECT_ID(N'dbo.app_report_shares', N'U') IS NULL
+     CREATE TABLE app_report_shares (
+       report_id  BIGINT NOT NULL,
+       user_id    BIGINT NOT NULL,
+       created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+       PRIMARY KEY (report_id, user_id),
+       FOREIGN KEY (report_id) REFERENCES app_generated_reports(id) ON DELETE CASCADE,
+       FOREIGN KEY (user_id)   REFERENCES app_users(id)
+     )`,
+    `IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_share_user' AND object_id = OBJECT_ID('dbo.app_report_shares'))
+     CREATE INDEX idx_share_user ON app_report_shares(user_id)`,
   ],
 };
 
