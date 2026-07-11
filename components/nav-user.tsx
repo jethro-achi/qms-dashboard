@@ -87,7 +87,17 @@ export function NavUser({
               Account
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => signOut({ callbackUrl: "/login" })}>
+            <DropdownMenuItem
+              onClick={async () => {
+                // Clear the session cookie without letting next-auth build the
+                // post-logout URL: in the standalone Docker image the server's
+                // hostname is 0.0.0.0, which it would otherwise hand back as an
+                // unreachable redirect (ERR_ADDRESS_INVALID). Redirect ourselves,
+                // relative to whatever origin the browser is actually on.
+                await signOut({ redirect: false })
+                window.location.href = "/login"
+              }}
+            >
               <LogOutIcon />
               Log out
             </DropdownMenuItem>
