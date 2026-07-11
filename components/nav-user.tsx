@@ -37,6 +37,7 @@ export function NavUser({
     name: string
     email: string
     role: Role
+    branchLabel: string
   }
 }) {
   const { isMobile } = useSidebar()
@@ -54,7 +55,8 @@ export function NavUser({
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{user.name}</span>
-              <span className="truncate text-xs text-foreground/70">
+              <span className="truncate text-xs text-foreground/70">{user.branchLabel}</span>
+              <span className="truncate text-xs text-foreground/60">
                 {ROLE_LABELS[user.role]}
               </span>
             </div>
@@ -82,11 +84,17 @@ export function NavUser({
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem render={<a href="/account" />}>
-              <CircleUserRoundIcon />
-              Account
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
+            {/* Self-service account is the super admin's only; branch ops and
+                dashboard admins are provisioned/managed by the super admin. */}
+            {user.role === "SUPER_ADMIN" && (
+              <>
+                <DropdownMenuItem render={<a href="/account" />}>
+                  <CircleUserRoundIcon />
+                  Account
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem
               onClick={async () => {
                 // Clear the session cookie without letting next-auth build the

@@ -182,9 +182,9 @@ export function UsersManager({
                 </TableCell>
                 <TableCell>
                   {u.isActive ? (
-                    <Badge className="bg-emerald-600/15 text-emerald-700 dark:text-emerald-400" variant="secondary">Active</Badge>
+                    <Badge className="bg-emerald-600/15 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400" variant="secondary">Active</Badge>
                   ) : (
-                    <Badge variant="secondary">Inactive</Badge>
+                    <Badge className="bg-slate-500/15 text-slate-700 dark:bg-slate-400/15 dark:text-slate-300" variant="secondary">Inactive</Badge>
                   )}
                 </TableCell>
                 <TableCell className="text-right">

@@ -19,8 +19,15 @@
 .env.local
 .env*.local
 
+# tls — reverse-proxy certificates/keys must NEVER be committed.
+# Keep the certs/ dir (and its README) but ignore any real material in it.
+/deploy/nginx/certs/*
+!/deploy/nginx/certs/README.md
+
 # misc
 *.pem
+*.crt
+*.key
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts

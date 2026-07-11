@@ -37,6 +37,7 @@ export interface SidebarUser {
   name: string
   email: string
   role: Role
+  branchLabel: string
 }
 
 // Nav is derived from the signed-in role. Branch-scoped roles (BRANCH_OPS)
