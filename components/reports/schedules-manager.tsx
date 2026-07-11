@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select"
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -125,7 +125,7 @@ function RecipientPicker({
         <span className="truncate">{label}</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-72 w-64 overflow-auto">
-        <DropdownMenuLabel>Share with (admins)</DropdownMenuLabel>
+        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Share with (admins)</div>
         <DropdownMenuSeparator />
         {recipients.length === 0 ? (
           <div className="px-2 py-2 text-xs text-muted-foreground">No admins available to share with.</div>
@@ -183,7 +183,7 @@ function ShareMenu({ reportId, recipients }: { reportId: number; recipients: Rec
         {busy ? <Loader2Icon className="h-4 w-4 animate-spin" /> : <Share2Icon className="h-4 w-4" />}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-72 w-64 overflow-auto">
-        <DropdownMenuLabel>Share with (admins)</DropdownMenuLabel>
+        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Share with (admins)</div>
         <DropdownMenuSeparator />
         {recipients.length === 0 ? (
           <div className="px-2 py-2 text-xs text-muted-foreground">No admins available to share with.</div>
