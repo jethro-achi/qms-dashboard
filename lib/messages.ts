@@ -4,7 +4,8 @@
 // only ever read/write conversations they are a party to — enforced here by
 // always binding the caller's own id into every query.
 import { appQuery, appDb } from "./db";
-import { ROLE_LABELS, type Role } from "./rbac";
+import { roleDescription, seesAllBranches, type Role } from "./rbac";
+import { branchNamesFor } from "./branch-label";
 
 export interface Contact {
   id: number;
@@ -48,8 +49,10 @@ interface ContactRow {
 }
 
 /**
- * Everyone the caller can message (all other active users) with a per-contact
- * unread count (messages they sent to the caller that are unread).
+ * Everyone the caller can message: all other active users EXCEPT super admins
+ * (they're deliberately out of the messaging directory). Includes a per-contact
+ * unread count. Branch-scoped contacts get a "{Branch} Branch Operations"
+ * descriptor; admins get "Administrator".
  */
 export async function listContacts(meId: number): Promise<Contact[]> {
   const rows = await appQuery<ContactRow>(
@@ -57,18 +60,42 @@ export async function listContacts(meId: number): Promise<Contact[]> {
             (SELECT COUNT(*) FROM app_messages m
               WHERE m.sender_id = u.id AND m.recipient_id = ? AND m.read_at IS NULL) AS unread
        FROM app_users u
-      WHERE u.id <> ? AND u.is_active = 1
+      WHERE u.id <> ? AND u.is_active = 1 AND u.role <> 'SUPER_ADMIN'
       ORDER BY u.full_name`,
     [meId, meId],
   );
-  return rows.map((r) => ({
-    id: Number(r.id),
-    name: r.full_name,
-    email: r.email,
-    role: r.role,
-    roleLabel: ROLE_LABELS[r.role] ?? r.role,
-    unread: Number(r.unread ?? 0),
-  }));
+
+  // Resolve branch names for the branch-scoped contacts in one shot.
+  const scopedIds = rows.filter((r) => !seesAllBranches(r.role)).map((r) => Number(r.id));
+  const branchesByUser = new Map<number, string[]>();
+  if (scopedIds.length) {
+    const ph = scopedIds.map(() => "?").join(", ");
+    const brows = await appQuery<{ user_id: number; branch_id: string }>(
+      `SELECT user_id, branch_id FROM app_user_branches WHERE user_id IN (${ph})`,
+      scopedIds,
+    );
+    for (const b of brows) {
+      const list = branchesByUser.get(Number(b.user_id)) ?? [];
+      list.push(b.branch_id);
+      branchesByUser.set(Number(b.user_id), list);
+    }
+  }
+
+  return Promise.all(
+    rows.map(async (r) => {
+      const branchName = seesAllBranches(r.role)
+        ? null
+        : await branchNamesFor(branchesByUser.get(Number(r.id)) ?? []);
+      return {
+        id: Number(r.id),
+        name: r.full_name,
+        email: r.email,
+        role: r.role,
+        roleLabel: roleDescription(r.role, branchName) ?? r.role,
+        unread: Number(r.unread ?? 0),
+      };
+    }),
+  );
 }
 
 interface MessageRow {
@@ -156,10 +183,11 @@ export async function sendMessage(
   if (trimmed.length > 4000) throw new Error("Message is too long.");
   if (recipientId === meId) throw new Error("Cannot message yourself.");
 
+  // Super admins are out of the messaging directory — never a valid recipient.
   const recipient =
     appDb().dialect === "mssql"
-      ? await appQuery<ExistsRow>("SELECT TOP 1 id FROM app_users WHERE id = ? AND is_active = 1", [recipientId])
-      : await appQuery<ExistsRow>("SELECT id FROM app_users WHERE id = ? AND is_active = 1 LIMIT 1", [recipientId]);
+      ? await appQuery<ExistsRow>("SELECT TOP 1 id FROM app_users WHERE id = ? AND is_active = 1 AND role <> 'SUPER_ADMIN'", [recipientId])
+      : await appQuery<ExistsRow>("SELECT id FROM app_users WHERE id = ? AND is_active = 1 AND role <> 'SUPER_ADMIN' LIMIT 1", [recipientId]);
   if (recipient.length === 0) throw new Error("Recipient not found.");
 
   await appQuery(
@@ -264,7 +292,7 @@ export async function getUnreadSummary(
     messageId: Number(r.id),
     senderId: Number(r.sender_id),
     senderName: r.full_name,
-    roleLabel: ROLE_LABELS[r.role] ?? r.role,
+    roleLabel: roleDescription(r.role, null) ?? r.role,
     preview: r.body?.trim()
       ? r.body.trim().slice(0, 140)
       : r.attachment_key

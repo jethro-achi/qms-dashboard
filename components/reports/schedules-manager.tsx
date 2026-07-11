@@ -84,7 +84,10 @@ const ACCEPT: Record<string, Record<string, string[]>> = {
 }
 
 const pad = (n: number) => String(n).padStart(2, "0")
-const HOURS = Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${pad(h)}:00` }))
+// Time is stored internally as a 24-hour runHour (0–23); the UI picks a 1–12
+// hour plus an AM/PM meridiem and maps between the two.
+const HOURS_12 = Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
+const AMPM_ITEMS = [{ value: "AM", label: "AM" }, { value: "PM", label: "PM" }]
 const MINUTES = [0, 15, 30, 45].map((m) => ({ value: String(m), label: pad(m) }))
 const DAYS = Array.from({ length: 28 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
 const MONTH_ITEMS = MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))
@@ -99,8 +102,14 @@ function fmtSize(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
+/** 24-hour hour + minute -> a 12-hour clock label, e.g. "6:00 AM". */
+function to12h(hour24: number, minute: number): string {
+  const h = hour24 % 12 === 0 ? 12 : hour24 % 12
+  const ampm = hour24 < 12 ? "AM" : "PM"
+  return `${h}:${pad(minute)} ${ampm}`
+}
 function describeTiming(s: Schedule): string {
-  const t = `${pad(s.runHour)}:${pad(s.runMinute)}`
+  const t = to12h(s.runHour, s.runMinute)
   if (s.reportType === "daily") return `at ${t}`
   if (s.reportType === "monthly") return `day ${s.dayOfMonth}, ${t}`
   if (s.reportType === "quarterly") return `quarter start, day ${s.dayOfMonth}, ${t}`
@@ -328,6 +337,27 @@ export function SchedulesManager({
   const recipientLabel =
     selectedRecipients.size === 0 ? "Recipients" : `${selectedRecipients.size} recipient(s)`
 
+  // 12-hour view over the 24-hour runHour state.
+  const hour12 = runHour % 12 === 0 ? 12 : runHour % 12
+  const meridiem: "AM" | "PM" = runHour < 12 ? "AM" : "PM"
+  function setHour12(h: number) {
+    const base = h % 12 // 12 -> 0
+    setRunHour(meridiem === "PM" ? base + 12 : base)
+  }
+  function setMeridiem(m: "AM" | "PM") {
+    const base = runHour % 12
+    setRunHour(m === "PM" ? base + 12 : base)
+  }
+  // Plain-English preview of the schedule being built, shown under the form.
+  function describeForm(): string {
+    const t = to12h(runHour, runMinute)
+    if (type === "daily") return `Runs every day at ${t}.`
+    if (type === "monthly") return `Runs on day ${dayOfMonth} of every month at ${t}.`
+    if (type === "quarterly")
+      return `Runs on day ${dayOfMonth} of each quarter start (Jan, Apr, Jul, Oct) at ${t}.`
+    return `Runs every year on ${MONTHS[monthOfYear - 1]} ${dayOfMonth} at ${t}.`
+  }
+
   return (
     <div className="grid gap-4">
       <Card>
@@ -409,10 +439,10 @@ export function SchedulesManager({
               <div className="grid gap-1.5">
                 <label className="text-sm font-medium">Time</label>
                 <div className="flex items-center gap-1">
-                  <Select items={HOURS} value={String(runHour)} onValueChange={(v) => setRunHour(Number(v) || 0)}>
-                    <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+                  <Select items={HOURS_12} value={String(hour12)} onValueChange={(v) => setHour12(Number(v) || 12)}>
+                    <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
                     <SelectContent className="max-h-64">
-                      {HOURS.map((h) => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}
+                      {HOURS_12.map((h) => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   <span className="text-muted-foreground">:</span>
@@ -422,6 +452,12 @@ export function SchedulesManager({
                       {MINUTES.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                  <Select items={AMPM_ITEMS} value={meridiem} onValueChange={(v) => setMeridiem((v as "AM" | "PM") || "AM")}>
+                    <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {AMPM_ITEMS.map((a) => <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <Button onClick={() => void create()} disabled={creating} className="ml-auto">
@@ -429,6 +465,12 @@ export function SchedulesManager({
                 Add schedule
               </Button>
             </div>
+
+            {/* Live plain-English preview of the schedule being configured. */}
+            <p className="text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">Preview: </span>
+              {describeForm()}
+            </p>
           </div>
 
           {/* schedules table */}

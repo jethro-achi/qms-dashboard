@@ -22,7 +22,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { EllipsisVerticalIcon, CircleUserRoundIcon, LogOutIcon } from "lucide-react"
-import { ROLE_LABELS, type Role } from "@/lib/rbac"
+import { roleDescription, type Role } from "@/lib/rbac"
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/)
@@ -41,6 +41,12 @@ export function NavUser({
   }
 }) {
   const { isMobile } = useSidebar()
+  // Branch ops -> "{Branch} Branch Operations"; admin -> "Administrator";
+  // super admin -> null (name only). Guard the no-branch sentinel.
+  const description = roleDescription(
+    user.role,
+    user.branchLabel === "No branch assigned" ? null : user.branchLabel,
+  )
   return (
     <SidebarMenu>
       <SidebarMenuItem>
@@ -55,10 +61,9 @@ export function NavUser({
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{user.name}</span>
-              <span className="truncate text-xs text-foreground/70">{user.branchLabel}</span>
-              <span className="truncate text-xs text-foreground/60">
-                {ROLE_LABELS[user.role]}
-              </span>
+              {description && (
+                <span className="truncate text-xs text-foreground/70">{description}</span>
+              )}
             </div>
             <EllipsisVerticalIcon className="ml-auto size-4" />
           </DropdownMenuTrigger>

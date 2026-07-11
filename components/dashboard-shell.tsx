@@ -10,7 +10,7 @@ import { MessageNotifier } from "@/components/messages/message-notifier"
 import { SessionGuard } from "@/components/session-guard"
 import type { SessionUser } from "@/lib/session"
 import { seesAllBranches } from "@/lib/rbac"
-import { getFilterOptions } from "@/lib/analytics/queries"
+import { branchNamesFor } from "@/lib/branch-label"
 import { hasLogo, logoVersion } from "@/lib/branding"
 import { getLogoScale } from "@/lib/settings"
 
@@ -20,14 +20,7 @@ import { getLogoScale } from "@/lib/settings"
  */
 async function resolveBranchLabel(user: SessionUser): Promise<string> {
   if (seesAllBranches(user.role)) return "All branches"
-  const ids = user.allowedBranchIds
-  if (ids.length === 0) return "No branch assigned"
-  const { branches } = await getFilterOptions()
-  const byId = new Map(branches.map((b) => [b.id, b.name]))
-  const names = ids.map((id) => byId.get(id)).filter((n): n is string => Boolean(n))
-  if (names.length === 0) return `${ids.length} branch${ids.length === 1 ? "" : "es"}`
-  if (names.length === 1) return names[0]
-  return `${names[0]} +${names.length - 1} more`
+  return branchNamesFor(user.allowedBranchIds)
 }
 
 export async function DashboardShell({

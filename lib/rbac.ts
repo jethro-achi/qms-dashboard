@@ -27,6 +27,27 @@ export const ROLE_LABELS: Record<Role, string> = {
   BRANCH_OPS: "Branch ops",
 };
 
+/**
+ * The secondary descriptor shown under a person's name (sidebar user block,
+ * messages contacts + header). Deliberately terse and role-specific:
+ *   SUPER_ADMIN -> null   (name only — no branch, no role line)
+ *   ADMIN       -> "Administrator"
+ *   BRANCH_OPS  -> "{Branch name} Branch Operations" (or just the role if the
+ *                  branch name isn't available)
+ */
+export function roleDescription(role: Role, branchName?: string | null): string | null {
+  switch (role) {
+    case "SUPER_ADMIN":
+      return null;
+    case "ADMIN":
+      return "Administrator";
+    case "BRANCH_OPS":
+      return branchName ? `${branchName} Branch Operations` : "Branch Operations";
+    default:
+      return null;
+  }
+}
+
 export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }

@@ -173,7 +173,7 @@ export function UsersManager({
                   ) : u.branchIds.length ? (
                     <div className="flex flex-wrap gap-1">
                       {u.branchIds.map((id) => (
-                        <Badge key={id} variant="secondary">{branchName.get(id) ?? id.slice(0, 8)}</Badge>
+                        <Badge key={id} variant="secondary" className="bg-slate-500/15 text-slate-700 dark:bg-slate-400/15 dark:text-slate-300">{branchName.get(id) ?? id.slice(0, 8)}</Badge>
                       ))}
                     </div>
                   ) : (
