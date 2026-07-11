@@ -11,6 +11,7 @@ import type { RowDataPacket } from "mysql2";
 import { qmsQuery } from "../db";
 import { seesAllBranches, type Principal } from "../rbac";
 import { getAppMetrics } from "../settings";
+import { cached, analyticsKey } from "../cache";
 import type { AnalyticsFilters } from "./filters";
 
 export const SLA_SECONDS = Number(process.env.QMS_SLA_SECONDS ?? 300);
@@ -91,7 +92,8 @@ export interface Kpis {
 export async function getKpis(filters: AnalyticsFilters, principal: Principal): Promise<Kpis> {
   const { clause, params } = buildWhere(filters, principal);
   const { slaSeconds } = await getAppMetrics();
-  const rows = await qmsQuery<KpiRow>(
+  const rows = await cached(analyticsKey("kpis", filters, principal, [slaSeconds]), () =>
+    qmsQuery<KpiRow>(
     `SELECT
         COUNT(*)                                                          AS totalTraffic,
         SUM(t.ticketStatus = 'Served')                                    AS served,
@@ -109,7 +111,7 @@ export async function getKpis(filters: AnalyticsFilters, principal: Principal): 
        FROM banktickets t
        ${clause}`,
     [slaSeconds, ...params],
-  );
+  ));
   const r = rows[0];
   const total = Number(r?.totalTraffic ?? 0);
   const served = Number(r?.served ?? 0);
@@ -154,7 +156,8 @@ export async function getTopDrivers(
   limit = 10,
 ): Promise<Driver[]> {
   const { clause, params } = buildWhere(filters, principal);
-  const rows = await qmsQuery<DriverRow>(
+  const rows = await cached(analyticsKey("drivers", filters, principal, [Number(limit)]), () =>
+    qmsQuery<DriverRow>(
     `SELECT t.issueDescription AS label, COUNT(*) AS value
        FROM banktickets t
        ${clause}
@@ -162,7 +165,7 @@ export async function getTopDrivers(
       ORDER BY value DESC
       LIMIT ${Number(limit)}`,
     params,
-  );
+  ));
   return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
 }
 
@@ -185,14 +188,15 @@ export async function getHourlyTraffic(
 ): Promise<HourBucket[]> {
   const { clause, params } = buildWhere(filters, principal);
   // Convert stored UTC to the configured local zone before bucketing by hour.
-  const rows = await qmsQuery<HourRow>(
+  const rows = await cached(analyticsKey("hourly", filters, principal, [TZ_OFFSET]), () =>
+    qmsQuery<HourRow>(
     `SELECT HOUR(CONVERT_TZ(t.createdAt, '+00:00', ?)) AS hour, COUNT(*) AS value
        FROM banktickets t
        ${clause}
       GROUP BY hour
       ORDER BY hour`,
     [TZ_OFFSET, ...params],
-  );
+  ));
   return rows.map((r) => ({
     hour: Number(r.hour),
     label: `${String(r.hour).padStart(2, "0")}:00`,
@@ -224,7 +228,8 @@ export async function getTrafficTrend(
   const midExpr = `(SELECT DATE_ADD(MIN(t2.createdAt),
         INTERVAL TIMESTAMPDIFF(SECOND, MIN(t2.createdAt), MAX(t2.createdAt)) / 2 SECOND)
       FROM banktickets t2 ${clause})`;
-  const rows = await qmsQuery<TrendRow>(
+  const rows = await cached(analyticsKey("trend", filters, principal), () =>
+    qmsQuery<TrendRow>(
     `SELECT
         SUM(t.createdAt >= ${midExpr}) AS recent,
         SUM(t.createdAt <  ${midExpr}) AS earlier
@@ -232,7 +237,7 @@ export async function getTrafficTrend(
        ${clause}`,
     // midExpr appears twice (each with its own WHERE params), then the outer WHERE.
     [...params, ...params, ...params],
-  );
+  ));
   const recent = Number(rows[0]?.recent ?? 0);
   const earlier = Number(rows[0]?.earlier ?? 0);
   if (earlier === 0) return { direction: recent > 0 ? "up" : "flat", pct: recent > 0 ? 100 : 0 };
@@ -257,13 +262,17 @@ export interface FilterOptions {
 }
 
 export async function getFilterOptions(): Promise<FilterOptions> {
-  const [branches, queues, statuses] = await Promise.all([
-    qmsQuery<OptionRow>("SELECT id, name FROM branches WHERE status = 1 ORDER BY name"),
-    qmsQuery<OptionRow>("SELECT id, name FROM queues ORDER BY name"),
-    qmsQuery<RowDataPacket & { ticketStatus: string }>(
-      "SELECT DISTINCT ticketStatus FROM banktickets ORDER BY ticketStatus",
-    ),
-  ]);
+  // Filter dimensions change rarely and aren't branch-scoped, so a single shared
+  // key is safe; the DISTINCT-status scan in particular is worth not repeating.
+  const [branches, queues, statuses] = await cached("filterOptions", () =>
+    Promise.all([
+      qmsQuery<OptionRow>("SELECT id, name FROM branches WHERE status = 1 ORDER BY name"),
+      qmsQuery<OptionRow>("SELECT id, name FROM queues ORDER BY name"),
+      qmsQuery<RowDataPacket & { ticketStatus: string }>(
+        "SELECT DISTINCT ticketStatus FROM banktickets ORDER BY ticketStatus",
+      ),
+    ]),
+  );
   return {
     branches: branches.map((b) => ({ id: b.id, name: b.name.trim() })),
     queues: queues.map((q) => ({ id: q.id, name: q.name.trim() })),

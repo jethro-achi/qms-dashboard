@@ -57,7 +57,7 @@ every route and page. Covered by `tests/rbac.test.ts` and `tests/build-where.tes
 
 **Q: Can the app modify the bank's QMS data?**
 No. The QMS pool (`lib/db.ts`) connects with a DB user that must be granted
-**SELECT only** on the analytics views, and the driver runs with
+**SELECT only** on the QMS tables, and the driver runs with
 `multipleStatements: false`. Read-only is enforced at the grant level, so the app
 physically cannot mutate queue data.
 
@@ -190,7 +190,7 @@ math, and the attachment allow-list + traversal guard. TypeScript is compiled wi
 ## Deployment hardening checklist
 
 - [ ] Terminate TLS at the reverse proxy; redirect HTTP→HTTPS (HSTS is already sent).
-- [ ] Grant the QMS DB user **SELECT-only** on the analytics views; set `QMS_DB_CA`.
+- [ ] Grant the QMS DB user **SELECT-only** on the QMS tables; set `QMS_DB_CA`.
 - [ ] Set `ssl: true` for the application DB and provide its CA.
 - [ ] Generate strong `AUTH_SECRET` and `CRON_SECRET` (`openssl rand`).
 - [ ] Mount `APP_CONFIG_DIR` as a persistent, access-controlled volume.

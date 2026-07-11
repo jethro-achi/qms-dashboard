@@ -2,90 +2,118 @@
 -- QMS Analytics Dashboard — database schema
 --
 -- Two databases. Run each block against the right one.
---   PART A -> the bank's QMS database (READ side). You create VIEWS over their
---             existing tables and a dedicated read-only user. Adapt the view
---             bodies to the real source tables — only the OUTPUT columns matter
---             to the app.
+--   PART A -> the bank's QMS database (READ side). This is the CONTRACT the app
+--             queries against: the real `banktickets` fact table plus its
+--             dimension tables, the exact columns the app reads, the indexes it
+--             needs to stay fast, and a dedicated read-only (SELECT) user.
 --   PART B -> your application database (users, RLS mapping, audit log).
 -- ============================================================================
 
 
 -- ============================================================================
--- PART A — QMS database (read-only analytics layer)
+-- PART A — QMS database (READ side — the schema the app actually queries)
 -- ----------------------------------------------------------------------------
--- Assumed source tables (rename to match reality):
---   tickets(ticket_id, branch_id, service_type, agent_id, agent_name,
---           issued_at, called_at, served_at, status, wait_seconds,
---           service_seconds, sla_met, customer_name, account_number,
---           phone_number)
---   branches(id, name)
--- status domain: WAITING, CALLED, SERVED, ABANDONED, TRANSFERRED, NO_SHOW
+-- IMPORTANT: the app reads the bank's REAL QMS tables directly — it does NOT
+-- create or depend on any `v_qms_*` views. This block documents the exact
+-- tables + columns the code relies on (see lib/analytics/*.ts and
+-- lib/reports/queries.ts) so you can (a) confirm your QMS matches, or (b) build
+-- thin views/synonyms named identically if your column names differ.
+--
+-- Do NOT run these CREATE statements against a live QMS that already has these
+-- tables — they are the reference shape. The only things you SHOULD run on the
+-- QMS side are the recommended INDEXES and the read-only GRANT at the bottom.
+--
+-- Timestamps are stored in UTC; the app converts to QMS_TZ_OFFSET for display.
+-- Durations are in SECONDS. ticketStatus domain: 'Waiting','Serving','Served',
+-- 'Not Served'.
 -- ============================================================================
 
--- Hourly aggregate that powers KPIs and the time series.
--- Grain: hour x branch x service_type x agent.
-CREATE OR REPLACE VIEW v_qms_metrics AS
-SELECT
-  DATE_FORMAT(t.issued_at, '%Y-%m-%d %H:00:00')                       AS bucket_start,
-  t.branch_id                                                        AS branch_id,
-  b.name                                                             AS branch_name,
-  t.service_type                                                     AS service_type,
-  t.agent_id                                                         AS agent_id,
-  COUNT(*)                                                           AS tickets_issued,
-  SUM(t.status = 'SERVED')                                           AS tickets_served,
-  SUM(t.status = 'ABANDONED')                                        AS tickets_abandoned,
-  SUM(COALESCE(t.wait_seconds, 0))                                   AS total_wait_seconds,
-  SUM(COALESCE(t.service_seconds, 0))                                AS total_service_seconds,
-  SUM(t.status = 'SERVED' AND t.sla_met = 1)                         AS sla_met_count
-FROM tickets t
-JOIN branches b ON b.id = t.branch_id
-GROUP BY bucket_start, t.branch_id, b.name, t.service_type, t.agent_id;
+-- ---- Fact table: one row per ticket -----------------------------------------
+-- Every analytics/report query aggregates over this table, filtered by
+-- branchId (row-level security) and createdAt (date window).
+CREATE TABLE banktickets (
+  id                BIGINT UNSIGNED PRIMARY KEY,   -- COUNT(t.id), staff/exception joins
+  ticketNo          VARCHAR(32),                   -- shown in exceptions/feedback
+  branchId          VARCHAR(191) NOT NULL,         -- -> branches.id   (RLS + filters)
+  queueId           VARCHAR(191),                  -- -> queues.id     (filter option)
+  counterId         VARCHAR(191),                  -- -> counters.id   (staff attribution)
+  ticketStatus      VARCHAR(32)  NOT NULL,         -- 'Waiting'|'Serving'|'Served'|'Not Served'
+  issueDescription  VARCHAR(255),                  -- "service type" — top drivers / by-service
+  rating            TINYINT,                       -- 1..5, NULL if unrated (NPS/CSAT)
+  ratingComment     VARCHAR(1000),                 -- free-text feedback, NULL if none
+  createdAt         DATETIME     NOT NULL,         -- ticket issued (UTC) — primary time axis
+  notServedAt       DATETIME,                      -- entered waiting (exceptions "time in")
+  servingAt         DATETIME,                      -- service started
+  servedAt          DATETIME,                      -- service ended
+  notServedDuration INT,                           -- WAIT seconds (used for SLA + wait KPIs)
+  servingDuration   INT,                           -- SERVICE seconds (service-time KPIs)
+  totalDuration     INT                            -- wait + service seconds
+);
 
--- One row per ticket, for detail views and Excel export.
-CREATE OR REPLACE VIEW v_qms_detail AS
-SELECT
-  t.ticket_id,
-  t.branch_id,
-  b.name              AS branch_name,
-  t.service_type,
-  t.agent_name,
-  t.issued_at,
-  t.served_at,
-  t.wait_seconds,
-  t.service_seconds,
-  t.status,
-  t.sla_met,
-  t.customer_name,     -- PII: masked server-side unless role permits
-  t.account_number,    -- PII
-  t.phone_number       -- PII
-FROM tickets t
-JOIN branches b ON b.id = t.branch_id;
+-- ---- Dimension: branches ----------------------------------------------------
+CREATE TABLE branches (
+  id     VARCHAR(191) PRIMARY KEY,
+  name   VARCHAR(255) NOT NULL,
+  status TINYINT NOT NULL DEFAULT 1   -- getFilterOptions() lists WHERE status = 1
+);
 
--- Current live state per branch, for the SSE stream.
-CREATE OR REPLACE VIEW v_qms_live AS
-SELECT
-  b.id                                                               AS branch_id,
-  b.name                                                             AS branch_name,
-  SUM(t.status = 'WAITING')                                          AS waiting_count,
-  SUM(t.status = 'CALLED')                                           AS serving_count,
-  COALESCE(MAX(CASE WHEN t.status = 'WAITING'
-             THEN TIMESTAMPDIFF(SECOND, t.issued_at, NOW()) END), 0) AS longest_wait_seconds,
-  COALESCE(ROUND(AVG(CASE WHEN t.status = 'SERVED'
-             AND DATE(t.served_at) = CURDATE()
-             THEN t.wait_seconds END), 0), 0)                        AS avg_wait_today_seconds
-FROM branches b
-LEFT JOIN tickets t
-  ON t.branch_id = b.id
- AND DATE(t.issued_at) = CURDATE()
-GROUP BY b.id, b.name;
+-- ---- Dimension: queues ------------------------------------------------------
+CREATE TABLE queues (
+  id   VARCHAR(191) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL
+);
 
--- Dedicated read-only user. SELECT on the views ONLY — not the base tables.
--- Replace host/password; keep this account out of any write grants.
+-- ---- Dimension: service counters (workstations) -----------------------------
+-- Staff attribution path: banktickets.counterId -> counters.id -> counters.userId -> users.id
+CREATE TABLE counters (
+  id        VARCHAR(191) PRIMARY KEY,
+  userId    VARCHAR(191),               -- -> users.id (the teller signed in)
+  available TINYINT                     -- 1 = online, 0 = offline (agent-activity page)
+);
+
+-- ---- Dimension: users (tellers/agents on the QMS side; NOT app_users) -------
+CREATE TABLE users (
+  id       VARCHAR(191) PRIMARY KEY,
+  username VARCHAR(255)               -- displayed as the staff/agent name
+);
+
+-- ---- Activity log: teller/dashboard logins + actions (agent-activity page) ---
+CREATE TABLE logs (
+  id        BIGINT UNSIGNED PRIMARY KEY,
+  userId    VARCHAR(191),             -- -> users.id, NULL for system events
+  action    VARCHAR(64),              -- e.g. 'Teller Login', 'Dashboard login'
+  details   VARCHAR(255),             -- 'success...' etc.
+  createdAt DATETIME NOT NULL
+);
+
+-- ---- Recommended indexes (RUN THESE on the QMS side) ------------------------
+-- This is the single biggest performance lever. Every analytics query filters
+-- by branchId and a createdAt range; without a composite index MySQL full-scans
+-- banktickets on each dashboard load. On a table with millions of rows that is
+-- the difference between tens of milliseconds and seconds.
+--
+--   CREATE INDEX idx_bt_branch_created ON banktickets (branchId, createdAt);
+--   CREATE INDEX idx_bt_created        ON banktickets (createdAt);
+--   CREATE INDEX idx_bt_counter        ON banktickets (counterId);
+--   CREATE INDEX idx_bt_queue          ON banktickets (queueId);
+--   CREATE INDEX idx_logs_created      ON logs (createdAt);
+-- Verify with EXPLAIN that the dashboard queries use idx_bt_branch_created
+-- before rolling out to a large branch.
+
+-- ---- Dedicated read-only user (RUN THIS on the QMS side) --------------------
+-- The app only ever SELECTs. Grant SELECT on these five tables and nothing
+-- else — no write grants, no other schemas. Replace host/password. In
+-- production set QMS_DB_CA so the connection is TLS-encrypted.
 -- CREATE USER 'qms_reader'@'10.%' IDENTIFIED BY '<<strong-password>>';
--- GRANT SELECT ON qmsdb.v_qms_metrics TO 'qms_reader'@'10.%';
--- GRANT SELECT ON qmsdb.v_qms_detail  TO 'qms_reader'@'10.%';
--- GRANT SELECT ON qmsdb.v_qms_live    TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.banktickets TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.branches    TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.queues      TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.counters    TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.users       TO 'qms_reader'@'10.%';
+-- GRANT SELECT ON qms.logs        TO 'qms_reader'@'10.%';
 -- FLUSH PRIVILEGES;
+-- Prefer pointing QMS_DB_HOST at a READ REPLICA so these aggregates never
+-- compete with the live queue system on the primary.
 
 
 -- ============================================================================

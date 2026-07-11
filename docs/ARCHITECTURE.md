@@ -34,7 +34,7 @@ graph TD
 
   DASH["QMS Analytics Dashboard<br/>Next.js app (this repo)"]
 
-  QMS[("QMS database<br/>READ-ONLY replica<br/>analytics views")]
+  QMS[("QMS database<br/>READ-ONLY replica<br/>banktickets + dimensions")]
   APP[("Application database<br/>users · audit · settings · reports")]
   CRON["Scheduler<br/>(cron / Task Scheduler)"]
 
@@ -202,8 +202,9 @@ Two invariants:
 ## 6. Data model
 
 The **application** database (created by the `/setup` wizard, MySQL or SQL
-Server) holds identity, audit and app state. The **QMS** database exposes
-read-only analytics views.
+Server) holds identity, audit and app state. The **QMS** database is the bank's
+own queue system, read only — the `banktickets` fact table plus its branch,
+queue, counter and user dimensions.
 
 ```mermaid
 erDiagram

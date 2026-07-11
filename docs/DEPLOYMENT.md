@@ -164,27 +164,50 @@ docker compose exec app node scripts/seed-user.mjs \
 
 ## 6. QMS data (the read side)
 
-The dashboards read from **analytics views** in the `qms` database, defined in
-[`db/schema.sql`](../db/schema.sql) (PART A) over the bank's real ticket/branch
-tables. In production:
+The dashboards read the bank's **real QMS tables** in the `qms` database —
+the `banktickets` fact table plus `branches`, `queues`, `counters`, `users`,
+and `logs`. [`db/schema.sql`](../db/schema.sql) (PART A) documents the exact
+columns, the domain values, and the recommended indexes the app relies on. In
+production:
 
-1. Provision the views on the **read-only replica**, adapting the view bodies to
-   the real source tables — only the output columns matter to the app.
-2. **Lock down the QMS user:** grant `SELECT` on the views only, never on base
-   tables:
+1. **Confirm the schema matches** the PART A contract. If your column names
+   differ, expose thin views/synonyms named identically (`banktickets`, etc.) so
+   the app's queries resolve unchanged.
+2. **Add the recommended indexes** — chiefly `(branchId, createdAt)` on
+   `banktickets`. This is the biggest performance lever: without it, each
+   dashboard load full-scans the fact table. See PART A for the full list.
+3. **Point `QMS_DB_*` at a read replica**, not the primary OLTP node, so heavy
+   aggregates never compete with the live queue system. Set `QMS_DB_CA` to its
+   CA cert to force verified TLS.
+4. **Lock down the QMS user:** grant `SELECT` on those tables only, never write
+   grants, never other schemas:
 
    ```sql
-   CREATE USER 'qms_user'@'%' IDENTIFIED BY '<strong>';
-   GRANT SELECT ON qms.v_qms_metrics TO 'qms_user'@'%';
-   GRANT SELECT ON qms.v_qms_detail  TO 'qms_user'@'%';
-   -- ...one GRANT per view. No base-table grants.
+   CREATE USER 'qms_reader'@'%' IDENTIFIED BY '<strong>';
+   GRANT SELECT ON qms.banktickets TO 'qms_reader'@'%';
+   GRANT SELECT ON qms.branches    TO 'qms_reader'@'%';
+   GRANT SELECT ON qms.queues      TO 'qms_reader'@'%';
+   GRANT SELECT ON qms.counters    TO 'qms_reader'@'%';
+   GRANT SELECT ON qms.users       TO 'qms_reader'@'%';
+   GRANT SELECT ON qms.logs        TO 'qms_reader'@'%';
    ```
 
-3. Point `QMS_DB_*` at the replica and set `QMS_DB_CA` to its CA cert to force
-   verified TLS.
+For evaluation with the bundled MySQL, load a QMS dump into the `qms` database;
+until then dashboards render but show no data.
 
-For evaluation with the bundled MySQL, load a QMS dump into the `qms` database
-and ensure the views exist; until then dashboards render but show no data.
+### Performance at scale (millions of rows)
+
+Every analytics page runs a burst of aggregate queries on navigation (the app
+does **not** poll the QMS DB on a timer — the only recurring hit is a single
+`SELECT MAX(createdAt)` freshness probe every 30s per open tab). On a large fact
+table the cost is in those aggregates, controlled by four levers:
+
+| Lever | Where | Effect |
+|-------|-------|--------|
+| **Index `(branchId, createdAt)`** on `banktickets` | QMS DB (see `db/schema.sql` PART A) | Biggest win — turns full scans into index range scans. Verify with `EXPLAIN`. |
+| **`QMS_DEFAULT_LOOKBACK_DAYS`** | app env | Bounds the default scan to a recent window (e.g. `30`/`90`) instead of all history. |
+| **`QMS_CACHE_TTL`** | app env | In-process memo (default 30s) collapses repeat loads and rapid filter toggling into one DB round-trip; concurrent identical loads are coalesced. Holds aggregates only, never row-level PII. |
+| **Read replica** | `QMS_DB_HOST` | Keeps heavy aggregates off the primary OLTP node serving the live queues. |
 
 ---
 
@@ -245,7 +268,7 @@ reports aren't generated multiple times).
 
 - [ ] `AUTH_SECRET` and `CRON_SECRET` are strong, unique, and **not** committed.
 - [ ] Served only over **HTTPS**; HSTS is active at the edge.
-- [ ] QMS DB user is **SELECT-only** on views; no base-table or write grants.
+- [ ] QMS DB user is **SELECT-only** on the QMS tables; no write grants, no other schemas.
 - [ ] `QMS_DB_CA` set so DB connections use **verified TLS**.
 - [ ] Application DB password is strong; DB not exposed to the host/network
       beyond the app (`db` port stays unpublished in Compose).
@@ -346,7 +369,7 @@ deployment, **run the container** as in Options A/B above.
 | `db` won't start / init SQL ignored | The init script only runs on an **empty** data volume. `docker compose down -v` to reset (destroys data), then `up`. |
 | Login always fails | Wrong app-DB creds, or the user is inactive/locked. `docker compose exec app node scripts/reset-password.mjs …`. |
 | Native module errors on build | Ensure you build the image on Linux (the Dockerfile does); don't copy Windows `node_modules` into the image. |
-| Dashboards empty | The `qms` views have no data — load a QMS dump / verify the views exist. |
+| Dashboards empty | The `qms` database has no data — load a QMS dump / verify the `banktickets` table exists and is populated. |
 
 More context in [`ARCHITECTURE.md`](ARCHITECTURE.md). Test guidance in
 [`TESTING.md`](TESTING.md).

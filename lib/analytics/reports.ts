@@ -8,6 +8,7 @@ import type { Principal } from "../rbac";
 import type { AnalyticsFilters } from "./filters";
 import { buildWhere, TZ_OFFSET } from "./queries";
 import { getAppMetrics } from "../settings";
+import { cached, analyticsKey } from "../cache";
 import type { BarDatum } from "@/components/analytics/simple-bar-chart";
 
 function withExtra(base: { clause: string; params: unknown[] }, extra: string): string {
@@ -39,7 +40,9 @@ export async function getBranchOverview(filters: AnalyticsFilters, principal: Pr
   type Row = RowDataPacket & { label: string; value: number };
   type TSRow = RowDataPacket & { label: string; total: number; served: number };
 
-  const [traffic, service, wait, dow, waitDist] = await Promise.all([
+  const [traffic, service, wait, dow, waitDist] = await cached(
+    analyticsKey("branchOverview", filters, principal, [TZ_OFFSET]),
+    () => Promise.all([
     qmsQuery<TSRow>(
       `SELECT b.name label, COUNT(*) total, SUM(t.ticketStatus='Served') served
          FROM banktickets t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY total DESC`,
@@ -70,7 +73,7 @@ export async function getBranchOverview(filters: AnalyticsFilters, principal: Pr
          FROM banktickets t ${w.clause} GROUP BY band`,
       w.params,
     ),
-  ]);
+  ]));
 
   const byDow = new Map(dow.map((r) => [Number(r.dow), { total: Number(r.total), served: Number(r.served) }]));
   const busyDays = DAY_NAMES.map((label, i) => ({

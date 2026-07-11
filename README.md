@@ -60,7 +60,7 @@ flowchart LR
     RLS["RBAC + Row-Level Security<br/>branch scoping"]
   end
   DBAPP[("Application DB<br/>users, audit, settings")]
-  DBQMS[("QMS DB (read-only)<br/>analytics views")]
+  DBQMS[("QMS DB (read-only)<br/>banktickets + dimensions")]
   VOL[["Volume<br/>config, reports, uploads"]]
 
   U -->|HTTPS| MW --> RSC
@@ -71,7 +71,8 @@ flowchart LR
 ```
 
 Two databases, deliberately separated: the **QMS DB** is the bank's read-only
-replica (the app only ever `SELECT`s from analytics views), and the
+replica (the app only ever `SELECT`s from the `banktickets` fact table and its
+dimensions), and the
 **application DB** holds users, the audit log, settings and report metadata.
 All mutable files (DB config, generated reports, attachments, logo) live under a
 single directory (`APP_CONFIG_DIR`) that you mount as a volume. See
@@ -248,7 +249,7 @@ app/                 Next.js App Router (pages, API route handlers, error bounda
 components/          UI components (shadcn/base-ui) and feature components
 lib/                 Server logic: db, auth, rbac, analytics, reports, settings, audit
   db-adapters/       Pluggable MySQL / SQL Server engine adapters
-db/schema.sql        QMS analytics views (PART A) + app schema reference (PART B)
+db/schema.sql        QMS read-side contract + indexes (PART A) + app schema reference (PART B)
 deploy/mysql-init/   First-run SQL for the bundled Compose database
 scripts/             CLI helpers (seed user, reset password)
 tests/               Vitest unit tests
@@ -267,6 +268,6 @@ docker-compose.yml   App + MySQL one-command stack
 | `/setup` says "already configured" | Expected after go-live. To reconfigure, remove `app-config.json` from the volume and restart. |
 | App container unhealthy | `docker compose logs app`. Check `AUTH_SECRET` is set and the DB is reachable. `curl "localhost:3000/api/health?deep=1"` shows per-dependency status. |
 | Login always fails | Verify the QMS/app DB creds and that the user is active/not locked. Use `npm run reset:password`. |
-| Dashboards empty but app works | The `qms` database has no data/views yet — load a QMS dump and ensure the analytics views from `db/schema.sql` exist. |
+| Dashboards empty but app works | The `qms` database has no data yet — load a QMS dump and ensure the `banktickets` table (see `db/schema.sql` PART A) exists and is populated. |
 
 For anything deeper, see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

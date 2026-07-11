@@ -7,6 +7,7 @@ import type { Principal } from "../rbac";
 import type { AnalyticsFilters } from "./filters";
 import { buildWhere, TZ_OFFSET } from "./queries";
 import { getAppMetrics } from "../settings";
+import { cached, analyticsKey } from "../cache";
 
 export interface HomeKpi {
   key: string;
@@ -85,7 +86,8 @@ export async function getHomeKpis(filters: AnalyticsFilters, principal: Principa
   const slaMin = Math.round(SLA_SECONDS / 60);
 
   // --- Card VALUES: reflect the FULL active filter (date + branch/queue/status).
-  const valRows = await qmsQuery<ValuesRow>(
+  const valRows = await cached(analyticsKey("home.values", filters, principal, [SLA_SECONDS]), () =>
+    qmsQuery<ValuesRow>(
     `SELECT
         SUM(t.ticketStatus='Served')                                      AS served,
         SUM(t.ticketStatus='Not Served')                                  AS noShows,
@@ -98,7 +100,7 @@ export async function getHomeKpis(filters: AnalyticsFilters, principal: Principa
         MAX(t.createdAt)                                                  AS maxC
        FROM banktickets t ${w.clause}`,
     w.params,
-  );
+  ));
   const r = valRows[0];
 
   const served = Number(r?.served ?? 0);
@@ -142,9 +144,10 @@ export async function getHomeKpis(filters: AnalyticsFilters, principal: Principa
       cols.push(`SUM(${wp} AND t.rating IS NOT NULL) rated_${k}`);
       cols.push(`AVG(CASE WHEN ${wp} THEN t.rating END) rat_${k}`);
     }
-    const winRows = await qmsQuery<WindowRow>(
-      `SELECT ${cols.join(", ")} FROM banktickets t ${sw.clause}`,
-      sw.params,
+    const swFilters = { branchIds: filters.branchIds, queueIds: filters.queueIds, statuses: filters.statuses };
+    const winRows = await cached(
+      analyticsKey("home.windows", swFilters, principal, [SLA_SECONDS, r?.maxC ? String(r.maxC) : "none"]),
+      () => qmsQuery<WindowRow>(`SELECT ${cols.join(", ")} FROM banktickets t ${sw.clause}`, sw.params),
     );
     win = winRows[0];
   }
@@ -213,12 +216,13 @@ export interface TrafficPoint {
 
 export async function getTrafficSeries(filters: AnalyticsFilters, principal: Principal): Promise<TrafficPoint[]> {
   const w = buildWhere(filters, principal);
-  const rows = await qmsQuery<RowDataPacket & { d: string; total: number; served: number }>(
+  const rows = await cached(analyticsKey("home.series", filters, principal, [TZ_OFFSET]), () =>
+    qmsQuery<RowDataPacket & { d: string; total: number; served: number }>(
     `SELECT DATE_FORMAT(CONVERT_TZ(t.createdAt,'+00:00',?), '%Y-%m-%d') d,
             COUNT(*) total, SUM(t.ticketStatus='Served') served
        FROM banktickets t ${w.clause}
       GROUP BY d ORDER BY d`,
     [TZ_OFFSET, ...w.params],
-  );
+  ));
   return rows.map((x) => ({ date: String(x.d), total: Number(x.total), served: Number(x.served) }));
 }

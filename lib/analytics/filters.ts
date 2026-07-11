@@ -18,14 +18,43 @@ export type AnalyticsFilters = z.infer<typeof AnalyticsFiltersSchema>;
 
 export const EMPTY_FILTERS: AnalyticsFilters = {};
 
-/** Parse a raw cookie value into validated filters (empty on anything invalid). */
+/**
+ * Default look-back window (days) applied when the user hasn't picked a date
+ * range. On a bank with millions of tickets an unbounded default makes every
+ * dashboard load full-scan the fact table; a bounded default keeps the common
+ * case cheap (and, with the (branchId, createdAt) index, fast) while the user
+ * can always widen the range via the filter bar.
+ *
+ *   0 (or unset) = all history (previous behaviour — safe for small datasets).
+ *   30 / 90      = recommended for high-volume production QMS databases.
+ *
+ * Anchored to "now"; if your QMS data lags real time by more than this window
+ * the dashboard will look empty until you widen the filter — tune accordingly.
+ */
+export const DEFAULT_LOOKBACK_DAYS = Math.max(0, Number(process.env.QMS_DEFAULT_LOOKBACK_DAYS ?? 0));
+
+/** Apply the default look-back window when no explicit date filter is set. */
+export function withDefaultWindow(f: AnalyticsFilters): AnalyticsFilters {
+  if (DEFAULT_LOOKBACK_DAYS <= 0) return f;
+  if (f.dateFrom || f.dateTo) return f; // the user has chosen a range — respect it
+  const from = new Date();
+  from.setUTCDate(from.getUTCDate() - DEFAULT_LOOKBACK_DAYS);
+  return { ...f, dateFrom: from.toISOString().slice(0, 10) };
+}
+
+/**
+ * Parse a raw cookie value into validated filters (empty on anything invalid),
+ * then apply the default look-back window. Freshness/data-range probes that must
+ * see ALL history call the query layer with EMPTY_FILTERS/{} directly and so
+ * bypass this default.
+ */
 export function parseFilters(raw: string | undefined | null): AnalyticsFilters {
-  if (!raw) return EMPTY_FILTERS;
+  if (!raw) return withDefaultWindow(EMPTY_FILTERS);
   try {
     const parsed = AnalyticsFiltersSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : EMPTY_FILTERS;
+    return withDefaultWindow(parsed.success ? parsed.data : EMPTY_FILTERS);
   } catch {
-    return EMPTY_FILTERS;
+    return withDefaultWindow(EMPTY_FILTERS);
   }
 }
 
