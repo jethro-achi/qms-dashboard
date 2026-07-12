@@ -6,7 +6,8 @@ import { z } from "zod";
 import { getUser } from "@/lib/session";
 import { canChangeAppSettings } from "@/lib/rbac";
 import {
-  getAppTheme, getAppMetrics, getLogoScale, saveAppTheme, saveAppMetrics, saveLogoScale,
+  getAppTheme, getAppMetrics, getLogoScale, getShowTodayDefault,
+  saveAppTheme, saveAppMetrics, saveLogoScale, saveShowTodayDefault,
   MODES, LOGO_SCALE_MIN, LOGO_SCALE_MAX, type Mode,
 } from "@/lib/settings";
 import { deleteLogo, hasLogo, saveLogoFromDataUrl } from "@/lib/branding";
@@ -26,12 +27,13 @@ const Schema = z.object({
   logoScale: z.coerce.number().int().min(LOGO_SCALE_MIN).max(LOGO_SCALE_MAX).optional(),
   slaMinutes: z.coerce.number().int().min(1).max(600).optional(),
   exceptionMinutes: z.coerce.number().int().min(1).max(1440).optional(),
+  showTodayDefault: z.boolean().optional(),
 });
 
 export async function GET() {
   const user = await getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  return NextResponse.json({ theme: await getAppTheme(), metrics: await getAppMetrics(), logoScale: await getLogoScale(), hasLogo: hasLogo() });
+  return NextResponse.json({ theme: await getAppTheme(), metrics: await getAppMetrics(), logoScale: await getLogoScale(), showTodayDefault: await getShowTodayDefault(), hasLogo: hasLogo() });
 }
 
 export async function POST(req: Request) {
@@ -51,7 +53,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid input." }, { status: 400 });
   }
-  const { mode, primary, secondary, accent, logo, logoScale, slaMinutes, exceptionMinutes } = parsed.data;
+  const { mode, primary, secondary, accent, logo, logoScale, slaMinutes, exceptionMinutes, showTodayDefault } = parsed.data;
 
   // Logo: a data URL sets it, an empty string removes it, undefined leaves it.
   if (logo !== undefined) {
@@ -78,10 +80,14 @@ export async function POST(req: Request) {
     await saveLogoScale(logoScale);
   }
 
+  if (showTodayDefault !== undefined) {
+    await saveShowTodayDefault(showTodayDefault);
+  }
+
   await auditFromRequest(req, user.id, "SETTINGS_CHANGE", "app-settings", {
     mode, primary, secondary, accent, logoScale,
     logo: logo === undefined ? undefined : logo === "" ? "removed" : "updated",
-    slaMinutes, exceptionMinutes,
+    slaMinutes, exceptionMinutes, showTodayDefault,
   });
 
   return NextResponse.json({
@@ -89,6 +95,7 @@ export async function POST(req: Request) {
     theme: await getAppTheme(),
     metrics: await getAppMetrics(),
     logoScale: await getLogoScale(),
+    showTodayDefault: await getShowTodayDefault(),
     hasLogo: hasLogo(),
   });
 }

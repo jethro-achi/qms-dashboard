@@ -40,14 +40,31 @@ export function buildWhere(filters: AnalyticsFilters, principal: Principal): { c
   if (filters.branchIds?.length) conds.push(inList("t.branchId", filters.branchIds, params));
   if (filters.queueIds?.length) conds.push(inList("t.queueId", filters.queueIds, params));
   if (filters.statuses?.length) conds.push(inList("t.ticketStatus", filters.statuses, params));
-  if (filters.dateFrom) {
-    conds.push("t.createdAt >= ?");
-    params.push(`${filters.dateFrom} 00:00:00`);
+  if (filters.serviceNames?.length) conds.push(inList("t.issueDescription", filters.serviceNames, params));
+  if (filters.staffIds?.length) {
+    // Staff -> tickets goes through the counter the ticket was served at.
+    const ph = filters.staffIds.map(() => "?").join(", ");
+    conds.push(`t.counterId IN (SELECT id FROM counters WHERE userId IN (${ph}))`);
+    params.push(...filters.staffIds);
   }
-  if (filters.dateTo) {
-    // inclusive of the whole end day
+
+  if (filters.today) {
+    // Today mode overrides any date range: scope to the current calendar day.
+    const today = new Date().toISOString().slice(0, 10);
+    conds.push("t.createdAt >= ?");
+    params.push(`${today} 00:00:00`);
     conds.push("t.createdAt < DATE_ADD(?, INTERVAL 1 DAY)");
-    params.push(`${filters.dateTo} 00:00:00`);
+    params.push(`${today} 00:00:00`);
+  } else {
+    if (filters.dateFrom) {
+      conds.push("t.createdAt >= ?");
+      params.push(`${filters.dateFrom} 00:00:00`);
+    }
+    if (filters.dateTo) {
+      // inclusive of the whole end day
+      conds.push("t.createdAt < DATE_ADD(?, INTERVAL 1 DAY)");
+      params.push(`${filters.dateTo} 00:00:00`);
+    }
   }
 
   return { clause: conds.length ? `WHERE ${conds.join(" AND ")}` : "", params };
@@ -259,17 +276,25 @@ export interface FilterOptions {
   branches: { id: string; name: string }[];
   queues: { id: string; name: string }[];
   statuses: string[];
+  services: string[];
+  staff: { id: string; name: string }[];
 }
 
 export async function getFilterOptions(): Promise<FilterOptions> {
   // Filter dimensions change rarely and aren't branch-scoped, so a single shared
-  // key is safe; the DISTINCT-status scan in particular is worth not repeating.
-  const [branches, queues, statuses] = await cached("filterOptions", () =>
+  // key is safe; the DISTINCT scans in particular are worth not repeating.
+  const [branches, queues, statuses, services, staff] = await cached("filterOptions", () =>
     Promise.all([
       qmsQuery<OptionRow>("SELECT id, name FROM branches WHERE status = 1 ORDER BY name"),
       qmsQuery<OptionRow>("SELECT id, name FROM queues ORDER BY name"),
       qmsQuery<RowDataPacket & { ticketStatus: string }>(
         "SELECT DISTINCT ticketStatus FROM banktickets ORDER BY ticketStatus",
+      ),
+      qmsQuery<RowDataPacket & { s: string }>(
+        "SELECT DISTINCT issueDescription AS s FROM banktickets WHERE issueDescription IS NOT NULL AND issueDescription <> '' ORDER BY issueDescription",
+      ),
+      qmsQuery<OptionRow>(
+        "SELECT DISTINCT u.id, COALESCE(u.username, '—') AS name FROM users u JOIN counters c ON c.userId = u.id ORDER BY name",
       ),
     ]),
   );
@@ -277,5 +302,7 @@ export async function getFilterOptions(): Promise<FilterOptions> {
     branches: branches.map((b) => ({ id: b.id, name: b.name.trim() })),
     queues: queues.map((q) => ({ id: q.id, name: q.name.trim() })),
     statuses: statuses.map((s) => s.ticketStatus),
+    services: services.map((r) => r.s.trim()).filter(Boolean),
+    staff: staff.map((u) => ({ id: String(u.id), name: String(u.name).trim() })),
   };
 }

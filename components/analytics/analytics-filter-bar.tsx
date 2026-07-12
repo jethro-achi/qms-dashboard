@@ -13,7 +13,7 @@ export async function AnalyticsFilterBar({
   filters: AnalyticsFilters
   activeCount: number
 }) {
-  let options: FilterOptions = { branches: [], queues: [], statuses: [] }
+  let options: FilterOptions = { branches: [], queues: [], statuses: [], services: [], staff: [] }
   try {
     options = await getFilterOptions()
   } catch {

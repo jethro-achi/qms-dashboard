@@ -43,6 +43,8 @@ export function FilterBar({
   const [branchIds, setBranchIds] = React.useState<Set<string>>(new Set(current.branchIds ?? []))
   const [queueIds, setQueueIds] = React.useState<Set<string>>(new Set(current.queueIds ?? []))
   const [statuses, setStatuses] = React.useState<Set<string>>(new Set(current.statuses ?? []))
+  const [serviceNames, setServiceNames] = React.useState<Set<string>>(new Set(current.serviceNames ?? []))
+  const [staffIds, setStaffIds] = React.useState<Set<string>>(new Set(current.staffIds ?? []))
 
   function apply() {
     const filters: AnalyticsFilters = {}
@@ -51,6 +53,11 @@ export function FilterBar({
     if (branchIds.size) filters.branchIds = [...branchIds]
     if (queueIds.size) filters.queueIds = [...queueIds]
     if (statuses.size) filters.statuses = [...statuses]
+    if (serviceNames.size) filters.serviceNames = [...serviceNames]
+    if (staffIds.size) filters.staffIds = [...staffIds]
+    // Preserve the "Show today's data" choice; an explicit date range below is
+    // what turns Today mode off (handled server-side in withTodayResolved).
+    if (current.today !== undefined) filters.today = current.today
     writeCookie(filters)
     setOpen(false)
     router.refresh()
@@ -63,6 +70,8 @@ export function FilterBar({
     setBranchIds(new Set())
     setQueueIds(new Set())
     setStatuses(new Set())
+    setServiceNames(new Set())
+    setStaffIds(new Set())
     setOpen(false)
     router.refresh()
   }
@@ -116,6 +125,18 @@ export function FilterBar({
               selected={statuses}
               onToggle={(id) => setStatuses((s) => toggle(s, id))}
             />
+            <CheckGroup
+              title="Service"
+              items={options.services.map((s) => ({ id: s, label: s }))}
+              selected={serviceNames}
+              onToggle={(id) => setServiceNames((s) => toggle(s, id))}
+            />
+            <CheckGroup
+              title="Staff member"
+              items={options.staff.map((s) => ({ id: s.id, label: s.name }))}
+              selected={staffIds}
+              onToggle={(id) => setStaffIds((s) => toggle(s, id))}
+            />
 
             <div className="flex items-center gap-2 md:col-span-2 lg:col-span-4">
               <Button size="sm" onClick={apply}>Apply filters</Button>
@@ -128,6 +149,10 @@ export function FilterBar({
   )
 }
 
+// Threshold above which a group gets its own search box, so large datasets
+// (services, staff, many branches) stay usable.
+const SEARCHABLE_THRESHOLD = 8
+
 function CheckGroup({
   title,
   items,
@@ -139,12 +164,31 @@ function CheckGroup({
   selected: Set<string>
   onToggle: (id: string) => void
 }) {
+  const [q, setQ] = React.useState("")
+  const searchable = items.length > SEARCHABLE_THRESHOLD
+  const shown = React.useMemo(() => {
+    if (!searchable || !q.trim()) return items
+    const needle = q.trim().toLowerCase()
+    return items.filter((i) => i.label.toLowerCase().includes(needle))
+  }, [items, q, searchable])
+
   return (
     <div className="flex flex-col gap-2">
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</span>
+      {searchable && (
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Search ${title.toLowerCase()}…`}
+          className="h-8"
+        />
+      )}
       <div className="flex max-h-40 flex-col gap-2 overflow-y-auto pr-1">
         {items.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
-        {items.map((item) => (
+        {items.length > 0 && shown.length === 0 && (
+          <span className="text-xs text-muted-foreground">No matches</span>
+        )}
+        {shown.map((item) => (
           <label key={item.id} className="flex items-center gap-2 text-sm">
             <Checkbox checked={selected.has(item.id)} onCheckedChange={() => onToggle(item.id)} />
             <span className="truncate">{item.label}</span>

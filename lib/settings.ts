@@ -30,6 +30,7 @@ const KEYS = {
   slaMinutes: "sla_minutes",
   exceptionMinutes: "exception_minutes",
   logoScale: "logo_scale",
+  showTodayDefault: "show_today_default",
 } as const;
 
 // Logo display size as a percentage of the base height (48px). Clamped so the
@@ -97,6 +98,22 @@ export async function getLogoScale(): Promise<number> {
 
 export async function saveLogoScale(scale: number): Promise<void> {
   await upsert(KEYS.logoScale, String(clampLogoScale(scale)));
+  cache = null;
+}
+
+/**
+ * App-wide default for the dashboard's "Show today's data" toggle. When on,
+ * every analytics page loads scoped to the current day until the user turns the
+ * toggle off. Defaults off, preserving the original all-history behaviour.
+ */
+export async function getShowTodayDefault(): Promise<boolean> {
+  const map = await readMap();
+  if (!map) return false;
+  return map.get(KEYS.showTodayDefault) === "1";
+}
+
+export async function saveShowTodayDefault(on: boolean): Promise<void> {
+  await upsert(KEYS.showTodayDefault, on ? "1" : "0");
   cache = null;
 }
 

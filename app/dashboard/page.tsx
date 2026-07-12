@@ -6,10 +6,12 @@ import { TrafficAreaChart } from "@/components/analytics/traffic-area-chart"
 import { TopDriversChart } from "@/components/analytics/top-drivers-chart"
 import { HourlyTrafficChart } from "@/components/analytics/hourly-traffic-chart"
 import { FilterBar } from "@/components/analytics/filter-bar"
+import { TodayToggle } from "@/components/analytics/today-toggle"
 import { Card, CardContent } from "@/components/ui/card"
 import { requireUser, toPrincipal } from "@/lib/session"
-import { FILTER_COOKIE, parseFilters, hasActiveFilters } from "@/lib/analytics/filters"
+import { FILTER_COOKIE, parseFilters, hasActiveFilters, withTodayResolved } from "@/lib/analytics/filters"
 import { getKpis, getTopDrivers, getHourlyTraffic, getTrafficTrend, getFilterOptions } from "@/lib/analytics/queries"
+import { getShowTodayDefault } from "@/lib/settings"
 import { getHomeKpis, getTrafficSeries } from "@/lib/analytics/home"
 
 export const dynamic = "force-dynamic"
@@ -25,7 +27,9 @@ export default async function DashboardPage() {
 
   const cookieStore = await cookies()
   const raw = cookieStore.get(FILTER_COOKIE)?.value
-  const filters = parseFilters(raw ? decodeURIComponent(raw) : raw)
+  const rawFilters = parseFilters(raw ? decodeURIComponent(raw) : raw)
+  const showTodayDefault = await getShowTodayDefault()
+  const filters = withTodayResolved(rawFilters, showTodayDefault)
 
   let content: React.ReactNode
   try {
@@ -45,7 +49,10 @@ export default async function DashboardPage() {
 
     content = (
       <>
-        <FilterBar options={options} current={filters} activeCount={hasActiveFilters(filters) ? countActive(filters) : 0} />
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterBar options={options} current={rawFilters} activeCount={hasActiveFilters(rawFilters) ? countActive(rawFilters) : 0} />
+          <TodayToggle active={Boolean(filters.today)} current={rawFilters} />
+        </div>
         <KpiCards kpis={homeKpis} />
         <TrafficAreaChart data={series} />
         <div className="grid gap-4 lg:grid-cols-2">
@@ -82,5 +89,7 @@ function countActive(f: ReturnType<typeof parseFilters>): number {
   if (f.branchIds?.length) n += 1
   if (f.queueIds?.length) n += 1
   if (f.statuses?.length) n += 1
+  if (f.serviceNames?.length) n += 1
+  if (f.staffIds?.length) n += 1
   return n
 }

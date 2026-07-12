@@ -52,4 +52,23 @@ describe("buildWhere — parameterisation + row-level security", () => {
     expect(w.clause).toBe("WHERE t.branchId IN (?, ?) AND t.ticketStatus IN (?)");
     expect(w.params).toEqual(["b1", "b2", "Served"]);
   });
+
+  it("filters by service (issueDescription), bound as a parameter", () => {
+    const w = buildWhere({ serviceNames: ["Deposit", "Withdrawal"] }, superAdmin);
+    expect(w.clause).toBe("WHERE t.issueDescription IN (?, ?)");
+    expect(w.params).toEqual(["Deposit", "Withdrawal"]);
+  });
+
+  it("filters by staff through the counter sub-select", () => {
+    const w = buildWhere({ staffIds: ["7", "9"] }, superAdmin);
+    expect(w.clause).toBe("WHERE t.counterId IN (SELECT id FROM counters WHERE userId IN (?, ?))");
+    expect(w.params).toEqual(["7", "9"]);
+  });
+
+  it("Today mode scopes to a single day and overrides any date range", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const w = buildWhere({ today: true, dateFrom: "2020-01-01", dateTo: "2020-12-31" }, superAdmin);
+    expect(w.clause).toBe("WHERE t.createdAt >= ? AND t.createdAt < DATE_ADD(?, INTERVAL 1 DAY)");
+    expect(w.params).toEqual([`${today} 00:00:00`, `${today} 00:00:00`]);
+  });
 });

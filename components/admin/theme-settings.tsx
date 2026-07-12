@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Slider } from "@/components/ui/slider"
+import { Toggle } from "@/components/ui/toggle"
 import {
   Select,
   SelectContent,
@@ -87,11 +88,13 @@ export function ThemeSettings({
   initialMetrics,
   initialHasLogo,
   initialLogoScale,
+  initialShowTodayDefault,
 }: {
   initialTheme: InitialTheme
   initialMetrics: InitialMetrics
   initialHasLogo: boolean
   initialLogoScale: number
+  initialShowTodayDefault: boolean
 }) {
   const router = useRouter()
   const [mode, setMode] = React.useState(initialTheme.mode)
@@ -101,6 +104,7 @@ export function ThemeSettings({
   const [suggested, setSuggested] = React.useState(false)
   const [slaMinutes, setSlaMinutes] = React.useState(String(Math.round(initialMetrics.slaSeconds / 60)))
   const [exceptionMinutes, setExceptionMinutes] = React.useState(String(Math.round(initialMetrics.anomalySeconds / 60)))
+  const [showTodayDefault, setShowTodayDefault] = React.useState(initialShowTodayDefault)
 
   const [hasLogo, setHasLogo] = React.useState(initialHasLogo)
   const [logoData, setLogoData] = React.useState<string | null>(null) // pending upload
@@ -189,6 +193,7 @@ export function ThemeSettings({
     const ok = await post("metrics", {
       slaMinutes: Number(slaMinutes) || undefined,
       exceptionMinutes: Number(exceptionMinutes) || undefined,
+      showTodayDefault,
     })
     if (ok) toast.success("Thresholds updated.")
   }
@@ -357,6 +362,24 @@ export function ThemeSettings({
               onChange={(e) => setExceptionMinutes(e.target.value.replace(/\D/g, ""))}
             />
             <span className="text-xs text-muted-foreground">Service times above this appear on the Exceptions report.</span>
+          </div>
+          <div className="grid gap-1.5 border-t pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="today-default" className="text-sm font-medium">Default to today&apos;s data</label>
+              <Toggle
+                id="today-default"
+                variant="outline"
+                pressed={showTodayDefault}
+                onPressedChange={setShowTodayDefault}
+                aria-label="Default to today's data"
+              >
+                {showTodayDefault ? "On" : "Off"}
+              </Toggle>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              When on, dashboards open scoped to today&apos;s tickets. Each user can turn the
+              “Show today’s data” toggle off to browse history.
+            </span>
           </div>
         </CardContent>
         <CardFooter>

@@ -12,6 +12,13 @@ export const AnalyticsFiltersSchema = z.object({
   branchIds: z.array(z.string().min(1)).optional(),
   queueIds: z.array(z.string().min(1)).optional(),
   statuses: z.array(z.string().min(1)).optional(),
+  // Wave A: filter by service (banktickets.issueDescription) and by staff
+  // member (user ids, resolved to banktickets via the counter join).
+  serviceNames: z.array(z.string().min(1)).optional(),
+  staffIds: z.array(z.string().min(1)).optional(),
+  // "Show today's data" mode. When true it overrides any date range and scopes
+  // every query to the current day; an explicit date range turns it back off.
+  today: z.boolean().optional(),
 });
 
 export type AnalyticsFilters = z.infer<typeof AnalyticsFiltersSchema>;
@@ -64,6 +71,20 @@ export function hasActiveFilters(f: AnalyticsFilters): boolean {
       f.dateTo ||
       (f.branchIds && f.branchIds.length) ||
       (f.queueIds && f.queueIds.length) ||
-      (f.statuses && f.statuses.length),
+      (f.statuses && f.statuses.length) ||
+      (f.serviceNames && f.serviceNames.length) ||
+      (f.staffIds && f.staffIds.length),
   );
+}
+
+/**
+ * Resolve the effective "today" mode for a request. An explicit date range
+ * always means the user wants history, so it overrides Today mode; otherwise we
+ * honour the user's own toggle, falling back to the app-wide default the super
+ * admin set in Settings.
+ */
+export function withTodayResolved(f: AnalyticsFilters, defaultToday: boolean): AnalyticsFilters {
+  const explicitRange = Boolean(f.dateFrom || f.dateTo);
+  const today = explicitRange ? false : (f.today ?? defaultToday);
+  return { ...f, today };
 }
