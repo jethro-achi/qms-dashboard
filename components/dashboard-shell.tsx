@@ -7,6 +7,7 @@ import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { UnreadProvider } from "@/components/messages/unread-context"
 import { MessageNotifier } from "@/components/messages/message-notifier"
+import { AssistantLauncher } from "@/components/assistant/assistant-launcher"
 import { SessionGuard } from "@/components/session-guard"
 import type { SessionUser } from "@/lib/session"
 import { seesAllBranches } from "@/lib/rbac"
@@ -62,6 +63,8 @@ export async function DashboardShell({
           </div>
         </SidebarInset>
         <MessageNotifier />
+        {/* AI assistant — dashboard users only (not the super admin). */}
+        {user.role !== "SUPER_ADMIN" && <AssistantLauncher />}
         <SessionGuard />
       </SidebarProvider>
     </UnreadProvider>
