@@ -15,6 +15,12 @@ import { verify as argonVerify } from "@node-rs/argon2";
 import { appDb, appQuery } from "./db";
 import { audit } from "./audit";
 import type { Role } from "./rbac";
+import {
+  ldapEnabled,
+  ldapLocalAdminFallback,
+  verifyLdapCredentials,
+  LdapUnavailableError,
+} from "./ldap";
 
 const MAX_FAILED = Number(process.env.AUTH_MAX_FAILED ?? 5);
 const LOCKOUT_MINUTES = Number(process.env.AUTH_LOCKOUT_MINUTES ?? 15);
@@ -119,8 +125,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return fail("locked", user.id);
         }
 
-        const okPassword = await argonVerify(user.password_hash, password).catch(() => false);
-        if (!okPassword) return fail("bad_password", user.id);
+        // Password verification. With LDAP enabled the directory checks the
+        // password; the local hash is used only for the super-admin break-glass
+        // (so a down domain controller can't lock the operator out). Everyone
+        // else always goes through the directory.
+        const useLocalForAdmin =
+          user.role === "SUPER_ADMIN" && ldapLocalAdminFallback() && Boolean(user.password_hash);
+        const viaLdap = ldapEnabled() && !useLocalForAdmin;
+
+        let okPassword: boolean;
+        if (viaLdap) {
+          try {
+            okPassword = await verifyLdapCredentials(email, password);
+          } catch (err) {
+            // Directory unreachable/misconfigured → fail closed, never fall
+            // through to another auth path (except the admin break-glass above).
+            if (err instanceof LdapUnavailableError) return fail("ldap_unavailable", user.id);
+            throw err;
+          }
+        } else {
+          okPassword = await argonVerify(user.password_hash, password).catch(() => false);
+        }
+        if (!okPassword) return fail(viaLdap ? "ldap_bad_password" : "bad_password", user.id);
 
         const branches = await appQuery<BranchRow>(
           "SELECT branch_id FROM app_user_branches WHERE user_id = ?",

@@ -9,6 +9,12 @@ nginx reverse proxy.
 The proxy is defined in `docker-compose.yml` under the `proxy` profile, so it
 stays **off** during normal `docker compose up` and only runs when you ask for it.
 
+> **Directory sign-in (LDAP / Active Directory):** to have staff log in with
+> their existing AD account instead of app-managed passwords, see the dedicated
+> **[DEPLOY-LDAP.md](DEPLOY-LDAP.md)** — it includes what to request from the
+> bank's infosec team, TLS posture, and a review checklist. It's independent of
+> the domain/HTTPS steps below.
+
 ---
 
 ## 1. DNS — point the name at the server

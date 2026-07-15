@@ -25,6 +25,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
+    "ldapts": "^9.0.0",
     "lucide-react": "^1.23.0",
     "mssql": "^12.7.0",
     "mysql2": "^3.11.5",

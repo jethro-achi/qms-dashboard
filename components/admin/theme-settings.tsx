@@ -219,7 +219,9 @@ export function ThemeSettings({
             <label htmlFor="mode" className="text-sm font-medium">Default mode</label>
             <Select items={modeItems} value={mode} onValueChange={(v) => setMode((v as "light" | "dark") ?? "light")}>
               <SelectTrigger id="mode" className="w-48">
-                <SelectValue />
+                <SelectValue>
+                  {(value) => modeItems.find((m) => m.value === value)?.label ?? "Dark"}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {modeItems.map((m) => (
