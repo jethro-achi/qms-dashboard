@@ -52,17 +52,17 @@ export default async function ExceptionsPage() {
         <div className="flex flex-col justify-center">
           <p className="text-sm text-muted-foreground">
             The <strong className="text-foreground">Exceptions / Anomalies</strong> report identifies
-            erroneous / abnormal records based on service time. All records here have a customer
-            service time <strong className="text-foreground">&gt; {thresholdMin} minutes</strong>.
+            erroneous / abnormal records. All records here have a customer wait time OR service
+            time <strong className="text-foreground">&gt; {thresholdMin} minutes</strong>.
           </p>
         </div>
         <FilterableBarCard
-          title="Average Anomaly Service Time by Staff (min)"
+          title="Average Anomaly Duration by Staff (min)"
           data={byStaff}
           orientation="horizontal"
           valueSuffix=" min"
           labelWidth={100}
-          exportColumns={[{ key: "label", header: "Staff" }, { key: "value", header: "Avg Service (min)" }]}
+          exportColumns={[{ key: "label", header: "Staff" }, { key: "value", header: "Avg Anomaly (min)" }]}
         />
         <div className="lg:col-span-2">
           <ReportTable
@@ -70,7 +70,7 @@ export default async function ExceptionsPage() {
             rows={rows}
             searchKey="agent"
             searchLabel="Search by staff name"
-            emptyText="No anomalies (no ticket exceeded 60 minutes of service time)."
+            emptyText={`No anomalies (no ticket exceeded ${thresholdMin} minutes of wait or service time).`}
             exportTitle="Exceptions"
           />
         </div>

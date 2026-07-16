@@ -9,6 +9,7 @@ import type { AnalyticsFilters } from "./filters";
 import { buildWhere, TZ_OFFSET } from "./queries";
 import { getAppMetrics } from "../settings";
 import { cached, analyticsKey } from "../cache";
+import { qmsSource } from "./source";
 import type { BarDatum } from "@/components/analytics/simple-bar-chart";
 
 function withExtra(base: { clause: string; params: unknown[] }, extra: string): string {
@@ -37,31 +38,36 @@ export interface BranchOverview {
 
 export async function getBranchOverview(filters: AnalyticsFilters, principal: Principal): Promise<BranchOverview> {
   const w = buildWhere(filters, principal);
+  const { mode, tickets } = await qmsSource();
   type Row = RowDataPacket & { label: string; value: number };
   type TSRow = RowDataPacket & { label: string; total: number; served: number };
 
   const [traffic, service, wait, dow, waitDist] = await cached(
-    analyticsKey("branchOverview", filters, principal, [TZ_OFFSET]),
+    analyticsKey("branchOverview", filters, principal, [TZ_OFFSET, mode]),
     () => Promise.all([
     qmsQuery<TSRow>(
       `SELECT b.name label, COUNT(*) total, SUM(t.ticketStatus='Served') served
-         FROM banktickets t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY total DESC`,
+         FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY total DESC`,
       w.params,
+      mode,
     ),
     qmsQuery<Row>(
       `SELECT b.name label, ROUND(AVG(CASE WHEN t.ticketStatus='Served' THEN t.servingDuration END)/60,1) value
-         FROM banktickets t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY value DESC`,
+         FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY value DESC`,
       w.params,
+      mode,
     ),
     qmsQuery<Row>(
       `SELECT b.name label, ROUND(AVG(t.notServedDuration)/60,1) value
-         FROM banktickets t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY value DESC`,
+         FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY value DESC`,
       w.params,
+      mode,
     ),
     qmsQuery<RowDataPacket & { dow: number; total: number; served: number }>(
       `SELECT DAYOFWEEK(CONVERT_TZ(t.createdAt,'+00:00',?)) dow, COUNT(*) total, SUM(t.ticketStatus='Served') served
-         FROM banktickets t ${w.clause} GROUP BY dow`,
+         FROM ${tickets} t ${w.clause} GROUP BY dow`,
       [TZ_OFFSET, ...w.params],
+      mode,
     ),
     qmsQuery<RowDataPacket & { band: string; value: number }>(
       `SELECT CASE
@@ -70,8 +76,9 @@ export async function getBranchOverview(filters: AnalyticsFilters, principal: Pr
             WHEN t.notServedDuration < 1200 THEN '10–20 min'
             WHEN t.notServedDuration < 1800 THEN '20–30 min'
             ELSE '30+ min' END AS band, COUNT(*) value
-         FROM banktickets t ${w.clause} GROUP BY band`,
+         FROM ${tickets} t ${w.clause} GROUP BY band`,
       w.params,
+      mode,
     ),
   ]));
 
@@ -111,25 +118,29 @@ export interface StaffRow {
 
 export async function getStaffProductivity(filters: AnalyticsFilters, principal: Principal): Promise<StaffRow[]> {
   const w = buildWhere(filters, principal);
-  const { slaSeconds: SLA_SECONDS } = await getAppMetrics();
+  const { slaWaitSeconds: SLA_WAIT, slaServiceSeconds: SLA_SVC } = await getAppMetrics();
+  const { mode, tickets } = await qmsSource();
   const clause = withExtra(w, "t.ticketStatus='Served'");
+  // Within SLA = wait AND service both within target; outside = either exceeds it.
+  const met = "(t.notServedDuration <= ? AND t.servingDuration <= ?)";
   const rows = await qmsQuery<RowDataPacket & StaffRow>(
     `SELECT u.username staff, b.name branch,
         COUNT(t.id) served,
-        ROUND(100 * SUM(t.notServedDuration <= ?) / COUNT(t.id)) pctSla,
-        SUM(t.notServedDuration <= ?) slaWithin,
-        SUM(t.notServedDuration >  ?) slaOutside,
+        ROUND(100 * SUM${met} / COUNT(t.id)) pctSla,
+        SUM${met} slaWithin,
+        SUM(NOT ${met}) slaOutside,
         ROUND(AVG(t.servingDuration)/60, 1) avgServiceMin,
         ROUND(AVG(t.notServedDuration)/60, 1) avgWaitMin,
         COUNT(DISTINCT DATE(t.createdAt)) days
-       FROM banktickets t
+       FROM ${tickets} t
        JOIN counters c ON c.id = t.counterId
        JOIN users u    ON u.id = c.userId
        JOIN branches b ON b.id = t.branchId
        ${clause}
       GROUP BY u.id, b.name
       ORDER BY served DESC`,
-    [SLA_SECONDS, SLA_SECONDS, SLA_SECONDS, ...w.params],
+    [SLA_WAIT, SLA_SVC, SLA_WAIT, SLA_SVC, SLA_WAIT, SLA_SVC, ...w.params],
+    mode,
   );
   return rows.map((r) => ({
     staff: r.staff,
@@ -144,7 +155,7 @@ export async function getStaffProductivity(filters: AnalyticsFilters, principal:
   }));
 }
 
-// ---- Exceptions (service time > 60 min) -------------------------------------
+// ---- Exceptions (wait OR service time over the threshold, default 60 min) ----
 
 export interface ExceptionRow {
   agent: string;
@@ -163,7 +174,10 @@ export async function getExceptions(
 ): Promise<{ rows: ExceptionRow[]; byStaff: BarDatum[]; thresholdMin: number }> {
   const w = buildWhere(filters, principal);
   const { anomalySeconds } = await getAppMetrics();
-  const clause = withExtra(w, `t.servingDuration > ${Number(anomalySeconds)}`);
+  const { mode, tickets } = await qmsSource();
+  const secs = Number(anomalySeconds);
+  // An exception is a ticket whose wait OR service time exceeds the threshold.
+  const clause = withExtra(w, `(t.servingDuration > ${secs} OR t.notServedDuration > ${secs})`);
   const iso = (d: unknown) => (d ? new Date(d as string).toISOString() : null);
 
   const [rows, byStaff] = await Promise.all([
@@ -171,22 +185,26 @@ export async function getExceptions(
       `SELECT COALESCE(u.username,'—') agent, b.name branch, t.ticketNo,
           t.notServedAt timeIn, t.servingAt serviceStart, t.servedAt serviceEnd,
           ROUND(t.servingDuration/60) serviceMin, ROUND(t.notServedDuration/60) waitMin
-         FROM banktickets t
+         FROM ${tickets} t
          LEFT JOIN counters c ON c.id = t.counterId
          LEFT JOIN users u    ON u.id = c.userId
          JOIN branches b ON b.id = t.branchId
          ${clause}
-        ORDER BY t.servingDuration DESC`,
+        ORDER BY GREATEST(t.servingDuration, t.notServedDuration) DESC`,
       w.params,
+      mode,
     ),
     qmsQuery<RowDataPacket & { label: string; value: number }>(
-      `SELECT COALESCE(u.username,'—') label, ROUND(AVG(t.servingDuration)/60) value
-         FROM banktickets t
+      // Rank staff by the average magnitude of their exceptions (the longer of
+      // the wait or the service on each offending ticket).
+      `SELECT COALESCE(u.username,'—') label, ROUND(AVG(GREATEST(t.servingDuration, t.notServedDuration))/60) value
+         FROM ${tickets} t
          LEFT JOIN counters c ON c.id = t.counterId
          LEFT JOIN users u    ON u.id = c.userId
          ${clause}
         GROUP BY u.id ORDER BY value DESC`,
       w.params,
+      mode,
     ),
   ]);
 
@@ -222,29 +240,34 @@ export interface Feedback {
 
 export async function getFeedback(filters: AnalyticsFilters, principal: Principal): Promise<Feedback> {
   const w = buildWhere(filters, principal);
+  const { mode, tickets } = await qmsSource();
   const clause = withExtra(w, "t.rating IS NOT NULL");
 
   const [aggRows, byBranch, dist, comments] = await Promise.all([
     qmsQuery<RowDataPacket & { totalRated: number; promoters: number; passives: number; detractors: number }>(
       `SELECT COUNT(*) totalRated, SUM(t.rating=5) promoters, SUM(t.rating=4) passives, SUM(t.rating<=3) detractors
-         FROM banktickets t ${clause}`,
+         FROM ${tickets} t ${clause}`,
       w.params,
+      mode,
     ),
     qmsQuery<RowDataPacket & { label: string; ratings: number; nps: number }>(
       `SELECT b.name label, COUNT(*) ratings,
           ROUND((SUM(t.rating=5) - SUM(t.rating<=3)) / COUNT(*) * 100) nps
-         FROM banktickets t JOIN branches b ON b.id=t.branchId ${clause} GROUP BY b.name ORDER BY nps DESC`,
+         FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${clause} GROUP BY b.name ORDER BY nps DESC`,
       w.params,
+      mode,
     ),
     qmsQuery<RowDataPacket & { rating: number; value: number }>(
-      `SELECT t.rating rating, COUNT(*) value FROM banktickets t ${clause} GROUP BY t.rating`,
+      `SELECT t.rating rating, COUNT(*) value FROM ${tickets} t ${clause} GROUP BY t.rating`,
       w.params,
+      mode,
     ),
     qmsQuery<RowDataPacket & { branch: string; comment: string; ticketNo: string; date: string }>(
       `SELECT b.name branch, t.ratingComment comment, t.ticketNo, t.servedAt date
-         FROM banktickets t JOIN branches b ON b.id=t.branchId ${clause} AND t.ratingComment IS NOT NULL
+         FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${clause} AND t.ratingComment IS NOT NULL
         ORDER BY t.servedAt DESC LIMIT 200`,
       w.params,
+      mode,
     ),
   ]);
 
@@ -284,10 +307,12 @@ export interface DataRefreshRow {
 
 export async function getDataRefresh(filters: AnalyticsFilters, principal: Principal): Promise<DataRefreshRow[]> {
   const w = buildWhere(filters, principal);
+  const { mode, tickets } = await qmsSource();
   const rows = await qmsQuery<RowDataPacket & { branch: string; startDate: string; lastDate: string }>(
     `SELECT b.name branch, MIN(t.createdAt) startDate, MAX(t.createdAt) lastDate
-       FROM banktickets t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY b.name`,
+       FROM ${tickets} t JOIN branches b ON b.id=t.branchId ${w.clause} GROUP BY b.name ORDER BY b.name`,
     w.params,
+    mode,
   );
   return rows.map((r) => ({
     branch: r.branch.trim(),
@@ -375,13 +400,21 @@ function computeAvailability(rows: SessionEventRow[]): AgentAvail[] {
 }
 
 export async function getAgentActivity(): Promise<AgentActivity> {
+  // NOTE: In "new" mode the QMS records agent availability in `audit_logs`
+  // (before/after JSON), not this `logs` table — porting that is a follow-up.
+  // For now these run against the active mode's database.
+  const { mode } = await qmsSource();
   const [loginRows, totalRows, counterRows, sessionRows, logRows] = await Promise.all([
     qmsQuery<RowDataPacket & { n: number }>(
       "SELECT COUNT(*) n FROM logs WHERE details LIKE 'success%' AND action IN ('Teller Login','Dashboard login')",
+      [],
+      mode,
     ),
-    qmsQuery<RowDataPacket & { n: number }>("SELECT COUNT(DISTINCT userId) n FROM counters"),
+    qmsQuery<RowDataPacket & { n: number }>("SELECT COUNT(DISTINCT userId) n FROM counters", [], mode),
     qmsQuery<RowDataPacket & { available: number; agents: number }>(
       "SELECT available, COUNT(DISTINCT userId) agents FROM counters GROUP BY available",
+      [],
+      mode,
     ),
     // Successful login/logout events over the last 30 days of activity, for pairing.
     qmsQuery<SessionEventRow>(
@@ -391,11 +424,15 @@ export async function getAgentActivity(): Promise<AgentActivity> {
           AND l.action IN ('Teller Login','Dashboard login','Logout')
           AND l.createdAt >= (SELECT DATE_SUB(MAX(createdAt), INTERVAL 30 DAY) FROM logs)
         ORDER BY l.userId, l.createdAt`,
+      [],
+      mode,
     ),
     qmsQuery<RowDataPacket & { createdAt: string; agent: string; action: string; details: string }>(
       `SELECT l.createdAt, COALESCE(u.username,'system') agent, l.action, l.details
          FROM logs l LEFT JOIN users u ON u.id = l.userId
         ORDER BY l.createdAt DESC LIMIT 200`,
+      [],
+      mode,
     ),
   ]);
   const active = counterRows.find((r) => Number(r.available) === 1)?.agents ?? 0;

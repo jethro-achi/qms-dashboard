@@ -33,12 +33,12 @@ export async function assembleReport(
   const range = periodToRange(type, value);
   if (!range) return null;
   const filters = { dateFrom: range.dateFrom, dateTo: range.dateTo };
-  const { slaSeconds } = await getAppMetrics();
+  const { slaWaitSeconds, slaServiceSeconds } = await getAppMetrics();
 
   const [kpis, feedback, byBranch, byService, staff, hourly, daily, options] = await Promise.all([
     getKpis(filters, principal),
     getFeedback(filters, principal),
-    reportByBranch(filters, principal, slaSeconds),
+    reportByBranch(filters, principal, slaWaitSeconds, slaServiceSeconds),
     reportByService(filters, principal),
     getStaffProductivity(filters, principal),
     getHourlyTraffic(filters, principal),

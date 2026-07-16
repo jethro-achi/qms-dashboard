@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { QmsIllustration } from "@/components/qms-illustration"
+import { PoweredBy } from "@/components/powered-by"
 
 export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
   const router = useRouter()
@@ -48,7 +49,7 @@ export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
                 <div className="flex flex-col items-center gap-3 text-center">
                   {logoSrc ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={logoSrc} alt="Logo" className="max-h-16 w-auto object-contain" />
+                    <img src={logoSrc} alt="Logo" draggable={false} className="pointer-events-none max-h-16 w-auto select-none object-contain" />
                   ) : (
                     <div className="text-xl font-bold">QMS Analytics</div>
                   )}
@@ -106,12 +107,13 @@ export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
               <div className="space-y-1 text-center">
                 <p className="font-semibold">Queue Management Insights</p>
                 <p className="text-sm text-muted-foreground">
-                  Traffic, wait times, SLA and staff performance — at a glance.
+                  Traffic, wait times, SLA and staff performance at a glance.
                 </p>
               </div>
             </div>
           </CardContent>
         </Card>
+        <PoweredBy />
       </div>
     </div>
   )

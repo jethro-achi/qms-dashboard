@@ -5,6 +5,10 @@ For banks (and any client) that want staff to log in with their existing
 is written to be handed to the bank's **IT / infosec team** — it covers exactly
 what to request from them, what to configure, the TLS posture, and how to verify.
 
+> **LDAP is not SSO.** With LDAP the user still types their AD password into our
+> login form. For the difference, the authentication architecture, and the path
+> to true single sign-on (OIDC/SAML), see **[AUTH-SSO.md](AUTH-SSO.md)**.
+
 ---
 
 ## 1. What it does (and what it deliberately does *not* do)

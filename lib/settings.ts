@@ -1,14 +1,19 @@
 // lib/settings.ts
 // App-wide settings (super-admin managed), all stored in app_settings:
 //   * Appearance: light/dark mode + primary/secondary/accent colours.
-//   * Metrics:    the SLA target and the exception (anomaly) threshold, so the
-//                 dashboards adjust their visuals when these change.
+//   * Metrics:    the SLA wait + service targets and the exception (anomaly)
+//                 threshold, so the dashboards adjust their visuals when these
+//                 change.
 // Read once and cached (settings change rarely); safe before configuration.
 import { appQuery, appDb } from "./db";
 import { isConfigured } from "./app-config";
 
 export type Mode = "light" | "dark";
 export const MODES: readonly Mode[] = ["light", "dark"];
+
+// How the QMS ticket data is laid out (see lib/analytics/source.ts).
+export type QmsSourceMode = "old" | "new";
+export const QMS_SOURCE_MODES: readonly QmsSourceMode[] = ["old", "new"];
 
 export interface AppTheme {
   mode: Mode;
@@ -18,8 +23,12 @@ export interface AppTheme {
 }
 
 export interface AppMetrics {
-  slaSeconds: number; // a served ticket meets SLA if its wait is within this
-  anomalySeconds: number; // service time above this is flagged as an exception
+  // A served ticket meets SLA only if BOTH hold: its wait is within
+  // slaWaitSeconds AND its service is within slaServiceSeconds.
+  slaWaitSeconds: number; // default 600 (10 min)
+  slaServiceSeconds: number; // default 300 (5 min)
+  // A ticket is an exception if its wait OR its service exceeds this.
+  anomalySeconds: number; // default 3600 (60 min)
 }
 
 const KEYS = {
@@ -27,10 +36,15 @@ const KEYS = {
   primary: "color_primary",
   secondary: "color_secondary",
   accent: "color_accent",
+  slaWaitMinutes: "sla_wait_minutes",
+  slaServiceMinutes: "sla_service_minutes",
+  // Legacy single-threshold key (was the wait target); still read as a fallback
+  // for the wait threshold so existing installs keep any custom value.
   slaMinutes: "sla_minutes",
   exceptionMinutes: "exception_minutes",
   logoScale: "logo_scale",
   showTodayDefault: "show_today_default",
+  qmsSourceMode: "qms_source_mode",
 } as const;
 
 // Logo display size as a percentage of the base height (48px). Clamped so the
@@ -41,7 +55,8 @@ export const LOGO_SCALE_DEFAULT = 100;
 
 const DEFAULT_THEME: AppTheme = { mode: "light", primary: null, secondary: null, accent: null };
 const DEFAULT_METRICS: AppMetrics = {
-  slaSeconds: Number(process.env.QMS_SLA_SECONDS ?? 300),
+  slaWaitSeconds: Number(process.env.QMS_SLA_WAIT_SECONDS ?? process.env.QMS_SLA_SECONDS ?? 600),
+  slaServiceSeconds: Number(process.env.QMS_SLA_SERVICE_SECONDS ?? 300),
   anomalySeconds: Number(process.env.QMS_ANOMALY_SECONDS ?? 3600),
 };
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -106,6 +121,25 @@ export async function saveLogoScale(scale: number): Promise<void> {
  * every analytics page loads scoped to the current day until the user turns the
  * toggle off. Defaults off, preserving the original all-history behaviour.
  */
+/**
+ * Which QMS data layout to read (see lib/analytics/source.ts). The env var
+ * QMS_SOURCE_MODE is the install default; the super-admin radio overrides it and
+ * is stored in app_settings. Falls back to "old" (the original layout).
+ */
+const ENV_QMS_MODE: QmsSourceMode = process.env.QMS_SOURCE_MODE === "new" ? "new" : "old";
+
+export async function getQmsSourceMode(): Promise<QmsSourceMode> {
+  const map = await readMap();
+  const v = map?.get(KEYS.qmsSourceMode);
+  if (v === "new" || v === "old") return v;
+  return ENV_QMS_MODE;
+}
+
+export async function saveQmsSourceMode(mode: QmsSourceMode): Promise<void> {
+  await upsert(KEYS.qmsSourceMode, mode === "new" ? "new" : "old");
+  cache = null;
+}
+
 export async function getShowTodayDefault(): Promise<boolean> {
   const map = await readMap();
   if (!map) return false;
@@ -120,9 +154,14 @@ export async function saveShowTodayDefault(on: boolean): Promise<void> {
 export async function getAppMetrics(): Promise<AppMetrics> {
   const map = await readMap();
   if (!map) return DEFAULT_METRICS;
-  const slaMin = posInt(map.get(KEYS.slaMinutes), DEFAULT_METRICS.slaSeconds / 60);
+  // Wait target: prefer the new key, fall back to the legacy single SLA key.
+  const waitMin = posInt(
+    map.get(KEYS.slaWaitMinutes) ?? map.get(KEYS.slaMinutes),
+    DEFAULT_METRICS.slaWaitSeconds / 60,
+  );
+  const svcMin = posInt(map.get(KEYS.slaServiceMinutes), DEFAULT_METRICS.slaServiceSeconds / 60);
   const excMin = posInt(map.get(KEYS.exceptionMinutes), DEFAULT_METRICS.anomalySeconds / 60);
-  return { slaSeconds: slaMin * 60, anomalySeconds: excMin * 60 };
+  return { slaWaitSeconds: waitMin * 60, slaServiceSeconds: svcMin * 60, anomalySeconds: excMin * 60 };
 }
 
 async function upsert(key: string, value: string): Promise<void> {
@@ -158,8 +197,14 @@ export async function saveAppTheme(patch: Partial<AppTheme>): Promise<void> {
   cache = null;
 }
 
-export async function saveAppMetrics(patch: { slaMinutes?: number; exceptionMinutes?: number }): Promise<void> {
-  if (patch.slaMinutes !== undefined) await upsert(KEYS.slaMinutes, String(Math.max(1, Math.round(patch.slaMinutes))));
-  if (patch.exceptionMinutes !== undefined) await upsert(KEYS.exceptionMinutes, String(Math.max(1, Math.round(patch.exceptionMinutes))));
+export async function saveAppMetrics(patch: {
+  slaWaitMinutes?: number;
+  slaServiceMinutes?: number;
+  exceptionMinutes?: number;
+}): Promise<void> {
+  const clamp = (n: number) => String(Math.max(1, Math.round(n)));
+  if (patch.slaWaitMinutes !== undefined) await upsert(KEYS.slaWaitMinutes, clamp(patch.slaWaitMinutes));
+  if (patch.slaServiceMinutes !== undefined) await upsert(KEYS.slaServiceMinutes, clamp(patch.slaServiceMinutes));
+  if (patch.exceptionMinutes !== undefined) await upsert(KEYS.exceptionMinutes, clamp(patch.exceptionMinutes));
   cache = null;
 }

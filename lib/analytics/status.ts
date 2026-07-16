@@ -7,6 +7,7 @@ import { qmsQuery } from "../db";
 import type { Principal } from "../rbac";
 import { EMPTY_FILTERS } from "./filters";
 import { buildWhere } from "./queries";
+import { qmsSource } from "./source";
 
 export interface DataStatus {
   online: boolean;
@@ -22,10 +23,12 @@ export async function getDataStatus(principal: Principal): Promise<DataStatus> {
     // Branch-scoped so a branch user sees their own data's freshness. The value
     // is formatted as an explicit UTC ISO string to avoid driver TZ ambiguity.
     const w = buildWhere(EMPTY_FILTERS, principal);
+    const { mode, tickets } = await qmsSource();
     const rows = await qmsQuery<RowDataPacket & { m: string | null }>(
       `SELECT DATE_FORMAT(MAX(t.createdAt), '%Y-%m-%dT%H:%i:%sZ') AS m
-         FROM banktickets t ${w.clause}`,
+         FROM ${tickets} t ${w.clause}`,
       w.params,
+      mode,
     );
     return { online: true, lastUpdatedIso: rows[0]?.m ?? null, serverNowIso };
   } catch {

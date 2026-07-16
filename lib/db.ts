@@ -36,15 +36,42 @@ function required(name: string): string {
 //
 // Lazily constructed: importing this module (e.g. during first-run /setup,
 // before QMS_DB_* are necessarily present) must not throw.
-let _qmsPool: Pool | null = null;
-export function qmsPool(): Pool {
-  if (_qmsPool) return _qmsPool;
-  _qmsPool = mysql.createPool({
-    host: required("QMS_DB_HOST"),
-    port: Number(process.env.QMS_DB_PORT ?? 3306),
-    user: required("QMS_DB_USER"),
-    password: required("QMS_DB_PASSWORD"),
-    database: required("QMS_DB_NAME"),
+//
+// "old" mode reads the classic layout from QMS_DB_* (database QMS_DB_NAME).
+// "new" mode reads the newer deployment; it defaults to the SAME server/creds
+// but a different database (QMS_NEW_DB_NAME), overridable via QMS_NEW_DB_*.
+// See lib/analytics/source.ts for what changes between the two.
+export type QmsMode = "old" | "new";
+const _qmsPools: Partial<Record<QmsMode, Pool>> = {};
+
+function buildQmsPool(mode: QmsMode): Pool {
+  const pick = (base: string, fallback?: string) =>
+    process.env[base] ?? (fallback !== undefined ? process.env[fallback] : undefined);
+  const cfg =
+    mode === "new"
+      ? {
+          host: pick("QMS_NEW_DB_HOST", "QMS_DB_HOST"),
+          port: Number(process.env.QMS_NEW_DB_PORT ?? process.env.QMS_DB_PORT ?? 3306),
+          user: pick("QMS_NEW_DB_USER", "QMS_DB_USER"),
+          password: pick("QMS_NEW_DB_PASSWORD", "QMS_DB_PASSWORD"),
+          database: process.env.QMS_NEW_DB_NAME ?? "qms_db",
+        }
+      : {
+          host: required("QMS_DB_HOST"),
+          port: Number(process.env.QMS_DB_PORT ?? 3306),
+          user: required("QMS_DB_USER"),
+          password: required("QMS_DB_PASSWORD"),
+          database: required("QMS_DB_NAME"),
+        };
+  if (!cfg.host || !cfg.user || cfg.password === undefined || !cfg.database) {
+    throw new Error(`QMS (${mode}) connection is not fully configured. Set the QMS_DB_* / QMS_NEW_DB_* env vars.`);
+  }
+  return mysql.createPool({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: cfg.database,
     waitForConnections: true,
     connectionLimit: Number(process.env.QMS_DB_POOL ?? 10),
     maxIdle: 10,
@@ -57,7 +84,10 @@ export function qmsPool(): Pool {
       ? { ca: process.env.QMS_DB_CA, rejectUnauthorized: true }
       : undefined,
   });
-  return _qmsPool;
+}
+
+export function qmsPool(mode: QmsMode = "old"): Pool {
+  return (_qmsPools[mode] ??= buildQmsPool(mode));
 }
 
 // ---- Application adapter -----------------------------------------------------
@@ -85,8 +115,9 @@ export function appDb(): DbAdapter {
 export async function qmsQuery<T extends RowDataPacket>(
   sql: string,
   params: unknown[] = [],
+  mode: QmsMode = "old",
 ): Promise<T[]> {
-  const [rows] = await qmsPool().execute<T[]>(sql, params as unknown[] as never);
+  const [rows] = await qmsPool(mode).execute<T[]>(sql, params as unknown[] as never);
   return rows;
 }
 

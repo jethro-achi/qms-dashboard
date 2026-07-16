@@ -8,6 +8,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { UnreadProvider } from "@/components/messages/unread-context"
 import { MessageNotifier } from "@/components/messages/message-notifier"
 import { AssistantLauncher } from "@/components/assistant/assistant-launcher"
+import { PoweredBy } from "@/components/powered-by"
 import { SessionGuard } from "@/components/session-guard"
 import type { SessionUser } from "@/lib/session"
 import { seesAllBranches } from "@/lib/rbac"
@@ -61,6 +62,7 @@ export async function DashboardShell({
               <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">{children}</div>
             </div>
           </div>
+          <PoweredBy className="border-t px-4 lg:px-6" />
         </SidebarInset>
         <MessageNotifier />
         {/* AI assistant — dashboard users only (not the super admin). */}

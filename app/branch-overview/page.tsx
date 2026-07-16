@@ -34,7 +34,7 @@ export default async function BranchOverviewPage() {
           exportColumns={[{ key: "label", header: "Branch" }, { key: "total", header: "Total" }, { key: "served", header: "Served" }]}
         />
         <InteractiveBarCard
-          title="Busy Days — Traffic by Day of Week"
+          title="Busy Days - Traffic by Day of Week"
           data={o.busyDays}
           series={TOTAL_SERVED_SERIES}
           aggregate="sum"

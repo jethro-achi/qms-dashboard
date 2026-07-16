@@ -8,6 +8,7 @@ import type { AnalyticsFilters } from "./filters";
 import { buildWhere, TZ_OFFSET } from "./queries";
 import { getAppMetrics } from "../settings";
 import { cached, analyticsKey } from "../cache";
+import { qmsSource } from "./source";
 
 export interface HomeKpi {
   key: string;
@@ -23,6 +24,9 @@ export interface HomeKpi {
   dayDirection: "up" | "down" | "flat";
   dayGood: boolean;
   footerStrong: string;
+  // false = the primary (month) window had no trustworthy baseline, so the card
+  // shows "—" and a neutral footer instead of implying a real "steady" trend.
+  hasBaseline: boolean;
 }
 
 interface TrendResult {
@@ -30,6 +34,9 @@ interface TrendResult {
   deltaLabel: string;
   direction: "up" | "down" | "flat";
   good: boolean;
+  // true = there was enough prior-period data to compute a real comparison.
+  // false = "—": distinguishes "no change" (flat) from "nothing to compare to".
+  hasBaseline: boolean;
 }
 
 /**
@@ -46,8 +53,8 @@ interface TrendResult {
  *  - `flat` is a real state (|change| ≤ 1%), so the text can say "steady".
  */
 export function trend(now: number, prev: number, higherBetter: boolean, prevSample: number, minSample: number): TrendResult {
-  const flat: TrendResult = { deltaPct: 0, deltaLabel: "0%", direction: "flat", good: true };
-  const none: TrendResult = { deltaPct: 0, deltaLabel: "—", direction: "flat", good: true };
+  const flat: TrendResult = { deltaPct: 0, deltaLabel: "0%", direction: "flat", good: true, hasBaseline: true };
+  const none: TrendResult = { deltaPct: 0, deltaLabel: "—", direction: "flat", good: true, hasBaseline: false };
 
   if (prevSample < minSample || prev <= 0) return none; // no trustworthy baseline
 
@@ -63,6 +70,7 @@ export function trend(now: number, prev: number, higherBetter: boolean, prevSamp
     deltaLabel: `${capped > 0 ? "+" : ""}${capped}%${over ? "+" : ""}`,
     direction,
     good: direction !== "down",
+    hasBaseline: true,
   };
 }
 
@@ -82,24 +90,27 @@ type WindowRow = RowDataPacket & Record<string, number | null>;
 
 export async function getHomeKpis(filters: AnalyticsFilters, principal: Principal): Promise<HomeKpi[]> {
   const w = buildWhere(filters, principal);
-  const { slaSeconds: SLA_SECONDS } = await getAppMetrics();
-  const slaMin = Math.round(SLA_SECONDS / 60);
+  const { slaWaitSeconds: SLA_WAIT, slaServiceSeconds: SLA_SVC } = await getAppMetrics();
+  const { mode, tickets } = await qmsSource();
+  // SLA is met only when the wait AND the service time are both within target.
+  const slaMet = `t.notServedDuration<=${SLA_WAIT} AND t.servingDuration<=${SLA_SVC}`;
 
   // --- Card VALUES: reflect the FULL active filter (date + branch/queue/status).
-  const valRows = await cached(analyticsKey("home.values", filters, principal, [SLA_SECONDS]), () =>
+  const valRows = await cached(analyticsKey("home.values", filters, principal, [SLA_WAIT, SLA_SVC, mode]), () =>
     qmsQuery<ValuesRow>(
     `SELECT
         SUM(t.ticketStatus='Served')                                      AS served,
         SUM(t.ticketStatus='Not Served')                                  AS noShows,
         AVG(t.notServedDuration)                                          AS waitAll,
         AVG(CASE WHEN t.ticketStatus='Served' THEN t.servingDuration END) AS svcAll,
-        SUM(t.ticketStatus='Served' AND t.notServedDuration<=${SLA_SECONDS}) AS slaWithinAll,
+        SUM(t.ticketStatus='Served' AND ${slaMet}) AS slaWithinAll,
         SUM(t.ticketStatus='Served')                                      AS servedForSla,
         AVG(t.rating)                                                     AS ratAll,
         SUM(t.rating IS NOT NULL)                                         AS rated,
         MAX(t.createdAt)                                                  AS maxC
-       FROM banktickets t ${w.clause}`,
+       FROM ${tickets} t ${w.clause}`,
     w.params,
+    mode,
   ));
   const r = valRows[0];
 
@@ -140,14 +151,14 @@ export async function getHomeKpis(filters: AnalyticsFilters, principal: Principa
       cols.push(`SUM(${wp} AND t.ticketStatus='Not Served') noshow_${k}`);
       cols.push(`AVG(CASE WHEN ${wp} THEN t.notServedDuration END) wait_${k}`);
       cols.push(`AVG(CASE WHEN ${wp} AND t.ticketStatus='Served' THEN t.servingDuration END) svc_${k}`);
-      cols.push(`SUM(${wp} AND t.ticketStatus='Served' AND t.notServedDuration<=${SLA_SECONDS}) slaw_${k}`);
+      cols.push(`SUM(${wp} AND t.ticketStatus='Served' AND ${slaMet}) slaw_${k}`);
       cols.push(`SUM(${wp} AND t.rating IS NOT NULL) rated_${k}`);
       cols.push(`AVG(CASE WHEN ${wp} THEN t.rating END) rat_${k}`);
     }
     const swFilters = { branchIds: filters.branchIds, queueIds: filters.queueIds, statuses: filters.statuses };
     const winRows = await cached(
-      analyticsKey("home.windows", swFilters, principal, [SLA_SECONDS, r?.maxC ? String(r.maxC) : "none"]),
-      () => qmsQuery<WindowRow>(`SELECT ${cols.join(", ")} FROM banktickets t ${sw.clause}`, sw.params),
+      analyticsKey("home.windows", swFilters, principal, [SLA_WAIT, SLA_SVC, mode, r?.maxC ? String(r.maxC) : "none"]),
+      () => qmsQuery<WindowRow>(`SELECT ${cols.join(", ")} FROM ${tickets} t ${sw.clause}`, sw.params, mode),
     );
     win = winRows[0];
   }
@@ -187,14 +198,16 @@ export async function getHomeKpis(filters: AnalyticsFilters, principal: Principa
     key, label, value,
     deltaPct: t.m.deltaPct, deltaLabel: t.m.deltaLabel, direction: t.m.direction, good: t.m.good,
     dayDeltaLabel: t.d.deltaLabel, dayDirection: t.d.direction, dayGood: t.d.good,
-    footerStrong: texts[t.m.direction],
+    hasBaseline: t.m.hasBaseline,
+    // No month baseline → say so plainly instead of falsely implying "steady".
+    footerStrong: t.m.hasBaseline ? texts[t.m.direction] : "No prior-period data",
   });
 
   return [
     mk("served", "Customers Served", served.toLocaleString(), tServed,
       { up: "Throughput improving", flat: "Throughput steady", down: "Throughput slowing" }),
     mk("sla", "Served Within SLA", `${slaAll}%`, tSla,
-      { up: "SLA compliance rising", flat: `Holding the ${slaMin}-min SLA`, down: "SLA slipping" }),
+      { up: "SLA compliance rising", flat: "Holding the SLA target", down: "SLA slipping" }),
     mk("wait", "Avg Waiting Time", `${min1(r?.waitAll)} min`, tWait,
       { up: "Queues moving faster", flat: "Wait times steady", down: "Waits getting longer" }),
     mk("service", "Avg Service Time", `${min1(r?.svcAll)} min`, tSvc,
@@ -216,13 +229,15 @@ export interface TrafficPoint {
 
 export async function getTrafficSeries(filters: AnalyticsFilters, principal: Principal): Promise<TrafficPoint[]> {
   const w = buildWhere(filters, principal);
-  const rows = await cached(analyticsKey("home.series", filters, principal, [TZ_OFFSET]), () =>
+  const { mode, tickets } = await qmsSource();
+  const rows = await cached(analyticsKey("home.series", filters, principal, [TZ_OFFSET, mode]), () =>
     qmsQuery<RowDataPacket & { d: string; total: number; served: number }>(
     `SELECT DATE_FORMAT(CONVERT_TZ(t.createdAt,'+00:00',?), '%Y-%m-%d') d,
             COUNT(*) total, SUM(t.ticketStatus='Served') served
-       FROM banktickets t ${w.clause}
+       FROM ${tickets} t ${w.clause}
       GROUP BY d ORDER BY d`,
     [TZ_OFFSET, ...w.params],
+    mode,
   ));
   return rows.map((x) => ({ date: String(x.d), total: Number(x.total), served: Number(x.served) }));
 }

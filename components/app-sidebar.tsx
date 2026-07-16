@@ -90,15 +90,17 @@ export function AppSidebar({
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
+            {/* Brand logo is decorative only: not a link, not clickable, not
+                selectable/draggable (pointer-events-none + select-none). */}
             <SidebarMenuButton
-              className="h-auto data-[slot=sidebar-menu-button]:p-1.5!"
-              render={<a href="/dashboard" />}
+              className="pointer-events-none h-auto select-none data-[slot=sidebar-menu-button]:p-1.5!"
+              render={<div />}
             >
               {logoSrc ? (
                 // Client logo (transparent). eslint-disable: intentional <img>
                 // so it works with the file-served, non-optimized branding route.
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={logoSrc} alt="Logo" style={{ height: logoHeight }} className="w-auto object-contain" />
+                <img src={logoSrc} alt="Logo" draggable={false} style={{ height: logoHeight }} className="w-auto select-none object-contain" />
               ) : (
                 <>
                   <ActivitySquareIcon className="size-5!" />

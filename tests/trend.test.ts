@@ -8,10 +8,19 @@ describe("trend — KPI comparison logic", () => {
     const t = trend(50, 3, true, 3, 20); // prevSample 3 < minSample 20
     expect(t.deltaLabel).toBe("—");
     expect(t.direction).toBe("flat");
+    expect(t.hasBaseline).toBe(false); // "—" must not be mistaken for a real trend
   });
 
   it("shows a dash when there is no baseline at all", () => {
-    expect(trend(5, 0, true, 0, 0).deltaLabel).toBe("—");
+    const t = trend(5, 0, true, 0, 0);
+    expect(t.deltaLabel).toBe("—");
+    expect(t.hasBaseline).toBe(false);
+  });
+
+  it("distinguishes a true steady 0% (has baseline) from a missing baseline", () => {
+    const steady = trend(1005, 1000, true, 1000, 20);
+    expect(steady.direction).toBe("flat");
+    expect(steady.hasBaseline).toBe(true); // genuinely steady, not "no data"
   });
 
   it("computes a signed improvement for higher-is-better metrics", () => {

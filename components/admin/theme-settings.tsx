@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { UploadIcon, Trash2Icon, WandSparklesIcon, PaletteIcon, GaugeIcon } from "lucide-react"
+import { UploadIcon, Trash2Icon, WandSparklesIcon, PaletteIcon, GaugeIcon, DatabaseIcon } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -33,7 +33,8 @@ export interface InitialTheme {
 }
 
 export interface InitialMetrics {
-  slaSeconds: number
+  slaWaitSeconds: number
+  slaServiceSeconds: number
   anomalySeconds: number
 }
 
@@ -81,7 +82,7 @@ function ColorField({
   )
 }
 
-type Section = "appearance" | "metrics"
+type Section = "appearance" | "metrics" | "source"
 
 export function ThemeSettings({
   initialTheme,
@@ -89,12 +90,14 @@ export function ThemeSettings({
   initialHasLogo,
   initialLogoScale,
   initialShowTodayDefault,
+  initialQmsSourceMode,
 }: {
   initialTheme: InitialTheme
   initialMetrics: InitialMetrics
   initialHasLogo: boolean
   initialLogoScale: number
   initialShowTodayDefault: boolean
+  initialQmsSourceMode: "old" | "new"
 }) {
   const router = useRouter()
   const [mode, setMode] = React.useState(initialTheme.mode)
@@ -102,9 +105,11 @@ export function ThemeSettings({
   const [secondary, setSecondary] = React.useState(initialTheme.secondary ?? "")
   const [accent, setAccent] = React.useState(initialTheme.accent ?? "")
   const [suggested, setSuggested] = React.useState(false)
-  const [slaMinutes, setSlaMinutes] = React.useState(String(Math.round(initialMetrics.slaSeconds / 60)))
+  const [slaWaitMinutes, setSlaWaitMinutes] = React.useState(String(Math.round(initialMetrics.slaWaitSeconds / 60)))
+  const [slaServiceMinutes, setSlaServiceMinutes] = React.useState(String(Math.round(initialMetrics.slaServiceSeconds / 60)))
   const [exceptionMinutes, setExceptionMinutes] = React.useState(String(Math.round(initialMetrics.anomalySeconds / 60)))
   const [showTodayDefault, setShowTodayDefault] = React.useState(initialShowTodayDefault)
+  const [qmsSourceMode, setQmsSourceMode] = React.useState<"old" | "new">(initialQmsSourceMode)
 
   const [hasLogo, setHasLogo] = React.useState(initialHasLogo)
   const [logoData, setLogoData] = React.useState<string | null>(null) // pending upload
@@ -191,11 +196,17 @@ export function ThemeSettings({
 
   async function saveMetrics() {
     const ok = await post("metrics", {
-      slaMinutes: Number(slaMinutes) || undefined,
+      slaWaitMinutes: Number(slaWaitMinutes) || undefined,
+      slaServiceMinutes: Number(slaServiceMinutes) || undefined,
       exceptionMinutes: Number(exceptionMinutes) || undefined,
       showTodayDefault,
     })
     if (ok) toast.success("Thresholds updated.")
+  }
+
+  async function saveSource() {
+    const ok = await post("source", { qmsSourceMode })
+    if (ok) toast.success(`Data source set to ${qmsSourceMode === "new" ? "New" : "Old"}.`)
   }
 
   const showLogo = (hasLogo && !removeLogo) || Boolean(logoData)
@@ -342,16 +353,30 @@ export function ThemeSettings({
         </CardHeader>
         <CardContent className="grid gap-4">
           <div className="grid gap-1.5">
-            <label htmlFor="sla" className="text-sm font-medium">SLA target (minutes)</label>
+            <label htmlFor="sla-wait" className="text-sm font-medium">SLA wait target (minutes)</label>
             <Input
-              id="sla"
+              id="sla-wait"
               type="number"
               min={1}
               max={600}
-              value={slaMinutes}
-              onChange={(e) => setSlaMinutes(e.target.value.replace(/\D/g, ""))}
+              value={slaWaitMinutes}
+              onChange={(e) => setSlaWaitMinutes(e.target.value.replace(/\D/g, ""))}
             />
-            <span className="text-xs text-muted-foreground">A ticket meets SLA if the wait is within this.</span>
+            <span className="text-xs text-muted-foreground">Max acceptable waiting time.</span>
+          </div>
+          <div className="grid gap-1.5">
+            <label htmlFor="sla-service" className="text-sm font-medium">SLA service target (minutes)</label>
+            <Input
+              id="sla-service"
+              type="number"
+              min={1}
+              max={600}
+              value={slaServiceMinutes}
+              onChange={(e) => setSlaServiceMinutes(e.target.value.replace(/\D/g, ""))}
+            />
+            <span className="text-xs text-muted-foreground">
+              A ticket meets SLA only when its wait is within the target above <em>and</em> its service is within this.
+            </span>
           </div>
           <div className="grid gap-1.5">
             <label htmlFor="exc" className="text-sm font-medium">Exception threshold (minutes)</label>
@@ -363,7 +388,7 @@ export function ThemeSettings({
               value={exceptionMinutes}
               onChange={(e) => setExceptionMinutes(e.target.value.replace(/\D/g, ""))}
             />
-            <span className="text-xs text-muted-foreground">Service times above this appear on the Exceptions report.</span>
+            <span className="text-xs text-muted-foreground">A wait or service time above this appears on the Exceptions report.</span>
           </div>
           <div className="grid gap-1.5 border-t pt-4">
             <div className="flex items-center justify-between gap-3">
@@ -387,6 +412,51 @@ export function ThemeSettings({
         <CardFooter>
           <Button onClick={() => void saveMetrics()} disabled={saving !== null}>
             {saving === "metrics" ? "Saving…" : "Save thresholds"}
+          </Button>
+        </CardFooter>
+      </Card>
+
+      {/* Data source: which QMS layout to read (see lib/analytics/source.ts). */}
+      <Card className="lg:col-span-3">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <DatabaseIcon className="size-4 text-primary" />
+            <CardTitle>QMS data source</CardTitle>
+          </div>
+          <CardDescription>
+            Which layout the queue system exposes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          {([
+            { value: "old", title: "Old (Classic)", desc: "" },
+            { value: "new", title: "New", desc: "" },
+          ] as const).map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-none border p-3 transition-colors ${qmsSourceMode === opt.value ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                }`}
+            >
+              <input
+                type="radio"
+                name="qms-source-mode"
+                className="mt-1"
+                checked={qmsSourceMode === opt.value}
+                onChange={() => setQmsSourceMode(opt.value)}
+              />
+              <span className="grid gap-0.5">
+                <span className="text-sm font-medium">{opt.title}</span>
+                <span className="text-xs text-muted-foreground">{opt.desc}</span>
+              </span>
+            </label>
+          ))}
+          <span className="text-xs text-muted-foreground">
+            The connection for each layout is configured in the server environment.
+          </span>
+        </CardContent>
+        <CardFooter>
+          <Button onClick={() => void saveSource()} disabled={saving !== null}>
+            {saving === "source" ? "Saving…" : "Save data source"}
           </Button>
         </CardFooter>
       </Card>

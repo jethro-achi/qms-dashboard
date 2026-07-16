@@ -105,9 +105,14 @@ export function KpiCards({ kpis }: { kpis: HomeKpi[] }) {
               </CardAction>
             </CardHeader>
             <CardFooter className="flex-col items-start gap-1.5 text-sm">
-              <div className="line-clamp-1 flex items-center gap-2 font-medium">
+              <div
+                className={cn(
+                  "line-clamp-1 flex items-center gap-2",
+                  kpi.hasBaseline ? "font-medium" : "font-normal text-muted-foreground",
+                )}
+              >
                 {kpi.footerStrong}
-                <DirectionIcon direction={kpi.direction} className="size-4" />
+                {kpi.hasBaseline && <DirectionIcon direction={kpi.direction} className="size-4" />}
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
                 <MiniDelta deltaLabel={kpi.deltaLabel} direction={kpi.direction} good={kpi.good} label="vs last month" />

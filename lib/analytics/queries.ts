@@ -13,6 +13,7 @@ import { seesAllBranches, type Principal } from "../rbac";
 import { getAppMetrics } from "../settings";
 import { cached, analyticsKey } from "../cache";
 import type { AnalyticsFilters } from "./filters";
+import { qmsSource } from "./source";
 
 export const SLA_SECONDS = Number(process.env.QMS_SLA_SECONDS ?? 300);
 export const TZ_OFFSET = process.env.QMS_TZ_OFFSET ?? "+00:00";
@@ -108,8 +109,10 @@ export interface Kpis {
 
 export async function getKpis(filters: AnalyticsFilters, principal: Principal): Promise<Kpis> {
   const { clause, params } = buildWhere(filters, principal);
-  const { slaSeconds } = await getAppMetrics();
-  const rows = await cached(analyticsKey("kpis", filters, principal, [slaSeconds]), () =>
+  const { slaWaitSeconds, slaServiceSeconds } = await getAppMetrics();
+  const { mode, tickets } = await qmsSource();
+  // SLA is met only when BOTH the wait and the service time are within target.
+  const rows = await cached(analyticsKey("kpis", filters, principal, [slaWaitSeconds, slaServiceSeconds, mode]), () =>
     qmsQuery<KpiRow>(
     `SELECT
         COUNT(*)                                                          AS totalTraffic,
@@ -120,14 +123,15 @@ export async function getKpis(filters: AnalyticsFilters, principal: Principal): 
         AVG(CASE WHEN t.ticketStatus = 'Served' THEN t.servingDuration END) AS avgServiceSec,
         AVG(t.notServedDuration)                                          AS avgWaitSec,
         AVG(CASE WHEN t.ticketStatus = 'Served' THEN t.totalDuration END) AS avgTotalSec,
-        SUM(CASE WHEN t.ticketStatus = 'Served' AND t.notServedDuration <= ? THEN 1 ELSE 0 END) AS withinSla,
+        SUM(CASE WHEN t.ticketStatus = 'Served' AND t.notServedDuration <= ? AND t.servingDuration <= ? THEN 1 ELSE 0 END) AS withinSla,
         SUM(t.rating IS NOT NULL)                                         AS ratedCount,
         AVG(t.rating)                                                     AS avgRating,
         MIN(t.createdAt)                                                  AS minCreated,
         MAX(t.createdAt)                                                  AS maxCreated
-       FROM banktickets t
+       FROM ${tickets} t
        ${clause}`,
-    [slaSeconds, ...params],
+    [slaWaitSeconds, slaServiceSeconds, ...params],
+    mode,
   ));
   const r = rows[0];
   const total = Number(r?.totalTraffic ?? 0);
@@ -173,15 +177,17 @@ export async function getTopDrivers(
   limit = 10,
 ): Promise<Driver[]> {
   const { clause, params } = buildWhere(filters, principal);
-  const rows = await cached(analyticsKey("drivers", filters, principal, [Number(limit)]), () =>
+  const { mode, tickets } = await qmsSource();
+  const rows = await cached(analyticsKey("drivers", filters, principal, [Number(limit), mode]), () =>
     qmsQuery<DriverRow>(
     `SELECT t.issueDescription AS label, COUNT(*) AS value
-       FROM banktickets t
+       FROM ${tickets} t
        ${clause}
       GROUP BY t.issueDescription
       ORDER BY value DESC
       LIMIT ${Number(limit)}`,
     params,
+    mode,
   ));
   return rows.map((r) => ({ label: r.label, value: Number(r.value) }));
 }
@@ -204,15 +210,17 @@ export async function getHourlyTraffic(
   principal: Principal,
 ): Promise<HourBucket[]> {
   const { clause, params } = buildWhere(filters, principal);
+  const { mode, tickets } = await qmsSource();
   // Convert stored UTC to the configured local zone before bucketing by hour.
-  const rows = await cached(analyticsKey("hourly", filters, principal, [TZ_OFFSET]), () =>
+  const rows = await cached(analyticsKey("hourly", filters, principal, [TZ_OFFSET, mode]), () =>
     qmsQuery<HourRow>(
     `SELECT HOUR(CONVERT_TZ(t.createdAt, '+00:00', ?)) AS hour, COUNT(*) AS value
-       FROM banktickets t
+       FROM ${tickets} t
        ${clause}
       GROUP BY hour
       ORDER BY hour`,
     [TZ_OFFSET, ...params],
+    mode,
   ));
   return rows.map((r) => ({
     hour: Number(r.hour),
@@ -242,18 +250,20 @@ export async function getTrafficTrend(
   principal: Principal,
 ): Promise<Trend> {
   const { clause, params } = buildWhere(filters, principal);
+  const { mode, tickets } = await qmsSource();
   const midExpr = `(SELECT DATE_ADD(MIN(t2.createdAt),
         INTERVAL TIMESTAMPDIFF(SECOND, MIN(t2.createdAt), MAX(t2.createdAt)) / 2 SECOND)
-      FROM banktickets t2 ${clause})`;
-  const rows = await cached(analyticsKey("trend", filters, principal), () =>
+      FROM ${tickets} t2 ${clause})`;
+  const rows = await cached(analyticsKey("trend", filters, principal, [mode]), () =>
     qmsQuery<TrendRow>(
     `SELECT
         SUM(t.createdAt >= ${midExpr}) AS recent,
         SUM(t.createdAt <  ${midExpr}) AS earlier
-       FROM banktickets t
+       FROM ${tickets} t
        ${clause}`,
     // midExpr appears twice (each with its own WHERE params), then the outer WHERE.
     [...params, ...params, ...params],
+    mode,
   ));
   const recent = Number(rows[0]?.recent ?? 0);
   const earlier = Number(rows[0]?.earlier ?? 0);
@@ -281,20 +291,27 @@ export interface FilterOptions {
 }
 
 export async function getFilterOptions(): Promise<FilterOptions> {
-  // Filter dimensions change rarely and aren't branch-scoped, so a single shared
-  // key is safe; the DISTINCT scans in particular are worth not repeating.
-  const [branches, queues, statuses, services, staff] = await cached("filterOptions", () =>
+  const { mode, tickets } = await qmsSource();
+  // Filter dimensions change rarely and aren't branch-scoped, so a mode-scoped
+  // shared key is safe; the DISTINCT scans in particular are worth not repeating.
+  const [branches, queues, statuses, services, staff] = await cached(`filterOptions:${mode}`, () =>
     Promise.all([
-      qmsQuery<OptionRow>("SELECT id, name FROM branches WHERE status = 1 ORDER BY name"),
-      qmsQuery<OptionRow>("SELECT id, name FROM queues ORDER BY name"),
+      qmsQuery<OptionRow>("SELECT id, name FROM branches WHERE status = 1 ORDER BY name", [], mode),
+      qmsQuery<OptionRow>("SELECT id, name FROM queues ORDER BY name", [], mode),
       qmsQuery<RowDataPacket & { ticketStatus: string }>(
-        "SELECT DISTINCT ticketStatus FROM banktickets ORDER BY ticketStatus",
+        `SELECT DISTINCT ticketStatus FROM ${tickets} t ORDER BY ticketStatus`,
+        [],
+        mode,
       ),
       qmsQuery<RowDataPacket & { s: string }>(
-        "SELECT DISTINCT issueDescription AS s FROM banktickets WHERE issueDescription IS NOT NULL AND issueDescription <> '' ORDER BY issueDescription",
+        `SELECT DISTINCT issueDescription AS s FROM ${tickets} t WHERE issueDescription IS NOT NULL AND issueDescription <> '' ORDER BY issueDescription`,
+        [],
+        mode,
       ),
       qmsQuery<OptionRow>(
         "SELECT DISTINCT u.id, COALESCE(u.username, '—') AS name FROM users u JOIN counters c ON c.userId = u.id ORDER BY name",
+        [],
+        mode,
       ),
     ]),
   );
