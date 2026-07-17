@@ -25,8 +25,11 @@ services:
     environment:
       # State volume (overrides the image default; kept explicit here).
       APP_CONFIG_DIR: /var/lib/qms-dashboard
-      # Local AI assistant — talks to the bundled Ollama service on the internal
-      # network. Model runs on the server's CPU; nothing leaves the network.
+      # Local AI assistant — OFF by default (the local model needs real CPU/RAM).
+      # To enable: set ASSISTANT_ENABLED=true and start the model runtime with
+      #     docker compose --profile assistant up -d
+      # Nothing leaves the network; the model runs on the server's own CPU.
+      ASSISTANT_ENABLED: ${ASSISTANT_ENABLED:-false}
       OLLAMA_URL: http://ollama:11434
       ASSISTANT_MODEL: ${ASSISTANT_MODEL:-qwen2.5:3b}
     ports:
@@ -38,8 +41,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      # NOTE: no depends_on for `ollama` — it lives behind the "assistant"
+      # profile, and depending on a non-enabled profile breaks `up`.
     healthcheck:
       test:
         [
@@ -72,14 +75,18 @@ services:
       - ./deploy/nginx/qms-dashboard.conf:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/nginx/certs:/etc/nginx/certs:ro
 
-  # Local AI model runtime for the in-app assistant. CPU-only by default (no GPU
-  # reservation) so it runs on the server itself. After first `up`, pull the
-  # model once (needs internet, or side-load it on an air-gapped host):
-  #     docker compose exec ollama ollama pull qwen2.5:3b
-  # The app degrades gracefully (a friendly "unavailable" message) until it's there.
+  # Local AI model runtime for the in-app assistant. DEACTIVATED by default — it
+  # is the most compute-hungry service here, so it only starts when you ask for
+  # it. Plug it back in when the server has the headroom:
+  #     1. ASSISTANT_ENABLED=true in .env
+  #     2. docker compose --profile assistant up -d
+  #     3. docker compose exec ollama ollama pull qwen2.5:3b   (once)
+  # CPU-only (no GPU reservation). The app degrades gracefully (a friendly
+  # "unavailable" message) if the model isn't pulled yet.
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    profiles: ["assistant"]
     volumes:
       - ollama_models:/root/.ollama
     # Not published to the host — only the app container needs it.

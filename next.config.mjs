@@ -20,6 +20,20 @@ const securityHeaders = [
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
 
+// CSP for Next's immutable static assets (/_next/static, /_next/image).
+// middleware.ts owns the real, nonce-based policy but its matcher deliberately
+// skips these paths for performance — so without this they'd ship NO CSP at all,
+// which security scanners flag as "CSP header not set".
+//
+// This is safe to add here precisely BECAUSE these are subresources: a browser
+// enforces the *document's* CSP when loading scripts/styles/images, and ignores
+// the CSP on the subresource's own response. So this policy never restricts the
+// app; it only bites if one of these files is opened directly as a top-level
+// document, where making it inert is exactly what we want. It is scoped to these
+// paths so it can never collide with the nonce policy on real documents (two CSP
+// headers intersect, which would break every script on the page).
+const STATIC_ASSET_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; sandbox";
+
 // "standalone" output produces the small self-contained bundle for the on-prem
 // Linux Docker image. Its final step symlinks node_modules, which native
 // Windows blocks with EPERM unless Developer Mode / admin is on — and it isn't
@@ -36,7 +50,12 @@ const nextConfig = {
   // breaks those paths. Keep it external so it loads from node_modules.
   serverExternalPackages: ["pdfkit"],
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // Paths middleware.ts skips — give them a CSP so no response is without one.
+      { source: "/_next/static/:path*", headers: [{ key: "Content-Security-Policy", value: STATIC_ASSET_CSP }] },
+      { source: "/_next/image", headers: [{ key: "Content-Security-Policy", value: STATIC_ASSET_CSP }] },
+    ];
   },
 };
 

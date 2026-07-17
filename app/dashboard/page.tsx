@@ -51,7 +51,10 @@ export default async function DashboardPage() {
       <>
         <div className="flex flex-wrap items-center gap-2">
           <FilterBar options={options} current={rawFilters} activeCount={hasActiveFilters(rawFilters) ? countActive(rawFilters) : 0} />
-          <TodayToggle active={Boolean(filters.today)} current={rawFilters} />
+          {/* When the super admin has forced "Default to today's data", Today is
+              applied for everyone and this toggle is hidden (a date range in the
+              filter bar is then the way to look at history). */}
+          {!showTodayDefault && <TodayToggle active={Boolean(filters.today)} current={rawFilters} />}
         </div>
         <KpiCards kpis={homeKpis} />
         <TrafficAreaChart data={series} />

@@ -8,6 +8,7 @@ import { z } from "zod";
 import { getUser, toPrincipal } from "@/lib/session";
 import { runAssistant, type Turn } from "@/lib/ai/assistant";
 import { AssistantUnavailableError } from "@/lib/ai/ollama";
+import { assistantEnabled } from "@/lib/ai/enabled";
 import { auditFromRequest } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -26,6 +27,13 @@ const Schema = z.object({
 });
 
 export async function POST(req: Request) {
+  // Feature switch, checked BEFORE anything else: when the assistant is off the
+  // endpoint behaves as if it doesn't exist. Hiding the launcher in the UI is not
+  // enough on its own — this is the fail-closed server-side gate.
+  if (!assistantEnabled()) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
+
   const user = await getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   // Assistant is for dashboard users, not the super admin.

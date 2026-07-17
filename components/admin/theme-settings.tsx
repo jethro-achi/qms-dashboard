@@ -210,7 +210,9 @@ export function ThemeSettings({
   }
 
   const showLogo = (hasLogo && !removeLogo) || Boolean(logoData)
-  const logoSrc = logoData ?? `/api/branding/logo?v=${Date.now()}`
+  // Opaque per-render cache-buster. Not Date.now(): a raw Unix timestamp in the
+  // markup is an information disclosure (same reason as lib/branding.ts).
+  const logoSrc = logoData ?? `/api/branding/logo?v=${Math.random().toString(36).slice(2, 14)}`
   const previewPx = Math.round((LOGO_BASE_PX * logoScale) / 100)
 
   return (
@@ -404,8 +406,10 @@ export function ThemeSettings({
               </Toggle>
             </div>
             <span className="text-xs text-muted-foreground">
-              When on, dashboards open scoped to today&apos;s tickets. Each user can turn the
-              “Show today’s data” toggle off to browse history.
+              When on, every dashboard and report opens scoped to today&apos;s tickets for
+              everyone, and the “Show today’s data” button is hidden — picking a date range
+              in the filter bar is then the way to view history. When off, the button
+              reappears and each user&apos;s own choice persists across pages.
             </span>
           </div>
         </CardContent>

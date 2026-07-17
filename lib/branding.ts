@@ -3,6 +3,7 @@
 // and can be large). Served via GET /api/branding/logo and shown top-left in
 // the sidebar. Transparent PNG/SVG recommended (no background).
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const CONFIG_DIR = process.env.APP_CONFIG_DIR
@@ -19,10 +20,21 @@ export function hasLogo(): boolean {
   return existsSync(IMG);
 }
 
-/** A cache-busting token that changes whenever the logo file changes. */
+/**
+ * An OPAQUE cache-busting token that changes whenever the logo file changes.
+ *
+ * Deliberately a hash of the file's mtime+size rather than the mtime itself:
+ * this token is rendered into the markup of the PUBLIC, pre-auth login page, so
+ * emitting the raw value would disclose a server-side Unix timestamp to any
+ * anonymous visitor (flagged by security scanners as information disclosure).
+ * Hashing keeps the cache-busting behaviour — the token still changes exactly
+ * when the logo does — while revealing nothing about the server's clock or
+ * filesystem.
+ */
 export function logoVersion(): string {
   try {
-    return String(statSync(IMG).mtimeMs | 0);
+    const { mtimeMs, size } = statSync(IMG);
+    return createHash("sha256").update(`${mtimeMs}:${size}`).digest("hex").slice(0, 12);
   } catch {
     return "0";
   }

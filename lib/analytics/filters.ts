@@ -78,13 +78,21 @@ export function hasActiveFilters(f: AnalyticsFilters): boolean {
 }
 
 /**
- * Resolve the effective "today" mode for a request. An explicit date range
- * always means the user wants history, so it overrides Today mode; otherwise we
- * honour the user's own toggle, falling back to the app-wide default the super
- * admin set in Settings.
+ * Resolve the effective "today" mode for a request.
+ *
+ *  - An explicit date range always means the user wants history, so it wins in
+ *    both cases below (it's the only way to see history once Today is forced).
+ *  - `defaultToday` ON (super admin's "Default to today's data"): Today is
+ *    FORCED and the per-user toggle is hidden from the UI. The app-wide default
+ *    therefore has to win outright rather than act as a fallback — a stale
+ *    `today: false` left in someone's cookie from before the setting was turned
+ *    on would otherwise strand them on history with no button to switch back.
+ *  - `defaultToday` OFF: the user's own toggle decides, and their choice
+ *    persists in the shared filter cookie across pages and reports.
  */
 export function withTodayResolved(f: AnalyticsFilters, defaultToday: boolean): AnalyticsFilters {
   const explicitRange = Boolean(f.dateFrom || f.dateTo);
-  const today = explicitRange ? false : (f.today ?? defaultToday);
+  if (explicitRange) return { ...f, today: false };
+  const today = defaultToday ? true : (f.today ?? false);
   return { ...f, today };
 }
