@@ -118,6 +118,60 @@ are limited to `self` + `data:`, `connect-src 'self'`, `object-src 'none'`,
 `Permissions-Policy` (`next.config.mjs`). React escapes rendered values by default;
 there is no `dangerouslySetInnerHTML` on user content.
 
+**Q: Why does `style-src` still include `'unsafe-inline'`?** *(known scanner finding — accepted, with evidence)*
+It is retained **deliberately**; it cannot be removed without breaking the app.
+
+*Why it cannot be removed:*
+- Inline style **attributes** (`style={{…}}`) **cannot be nonced** — the CSP nonce
+  mechanism only applies to `<style>` **elements**. They are unavoidable here:
+  the `<html>` brand-theme variables (`app/layout.tsx`) and ~29 of our own
+  components are **server-rendered**, so they serialise into literal
+  `style="…"` attributes in the HTML, which `style-src-attr` governs.
+  (Client-rendered `style={{…}}` — Recharts internals, for instance — is applied
+  through the CSSOM by JavaScript and is **not** CSP-governed at all. It is
+  specifically the *server-rendered* attributes that force this, not the charts.)
+- Tightening only `style-src-elem` (so injected `<style>` blocks are refused, with
+  `'unsafe-inline'` confined to `style-src-attr`) **was implemented and tested in
+  headless Chrome, and it broke** — two un-nonced `<style>` **elements** were
+  refused with *"Applying inline style violates the following Content Security
+  Policy directive 'style-src-elem 'self' 'nonce-…''"*:
+  1. **`sonner`** (toasts) injects one at runtime. Confirmed at the API level:
+     **sonner v2.0.7** injects via `createElement('style')` into `document.head`
+     and exposes **no nonce option** anywhere in `ToasterProps` (only `gap`,
+     `offset`, `toasterId`) — there is no supported way to nonce it short of
+     forking or replacing the library.
+  2. **`ChartStyle`** (`components/ui/chart.tsx`) renders one via
+     `dangerouslySetInnerHTML` to carry per-chart colour variables. This one is
+     **ours** and *can* take the nonce — but it is useless to fix alone while
+     sonner still forces the directive open.
+
+  The change was reverted rather than shipped.
+
+*Why the residual risk is low:*
+- Styles **cannot execute script**.
+- Exploiting it first requires an **HTML-injection foothold**; React escapes
+  rendered values, there is no `dangerouslySetInnerHTML` on user content, and
+  script execution is separately blocked by the nonce + `strict-dynamic` policy.
+- **CSS exfiltration is not possible**: `default-src`, `img-src`, `font-src` and
+  `connect-src` are all `'self'` (+`data:` for img/font), so injected CSS has **no
+  external origin to send data to** — the classic attribute-selector
+  `background: url(https://attacker/…)` channel is closed.
+
+*Planned hardening (tracked, post-release):* replace `sonner` with the Toast that
+ships in `@base-ui/react` (**already a dependency** — no new library) behind a
+small `lib/toast.ts` façade, and pass the nonce to `ChartStyle`. That closes both
+`<style>`-element paths and allows `style-src-elem 'self' 'nonce-…'`, which is the
+vector that actually matters — a CSS-injection foothold could no longer land a
+`<style>` block.
+
+Note for future scans, so the result is not misread: **that work will not remove
+`'unsafe-inline'` from this header.** The server-rendered style *attributes* still
+require `style-src-attr 'unsafe-inline'`, and WebKit/Safari has never implemented
+the CSP3 `-elem`/`-attr` split — it reads only `style-src`, so a permissive
+`style-src` must remain as its fallback or the theme variables break there. This
+scanner finding may therefore persist even after the hardening lands. Judge it on
+the effective policy in Chromium/Firefox, not on the raw header string.
+
 **Q: Stored XSS via uploaded files (SVG/HTML)?**
 User-supplied files (message attachments, the client logo) are served with
 `X-Content-Type-Options: nosniff` and a sandboxing response CSP
