@@ -123,6 +123,10 @@ export function middleware(req: NextRequest) {
     url.searchParams.set("callbackUrl", pathname);
     const redirect = NextResponse.redirect(url);
     redirect.headers.set("Content-Security-Policy", csp);
+    // NextResponse.redirect() emits no Content-Type; the body is a throwaway
+    // "/login…" string a browser never renders (it follows Location). Set one
+    // anyway so no response leaves without a declared type (clears ZAP 10019).
+    redirect.headers.set("Content-Type", "text/plain; charset=utf-8");
     return redirect;
   }
 
