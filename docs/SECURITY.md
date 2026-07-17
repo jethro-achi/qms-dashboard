@@ -180,6 +180,21 @@ render as a top-level document (`app/api/messages/attachment/[id]/route.ts`,
 `app/api/branding/logo/route.ts`). Uploads are limited to a MIME allow-list and
 10 MB (`lib/message-attachments.ts`, `tests/message-attachments.test.ts`).
 
+**Q: Can authenticated pages leak via browser or proxy caches?**
+No — the cache posture is a deliberate control, not a default we ignored.
+Authenticated HTML documents are served `Cache-Control: private, no-store`
+(with `no-cache, max-age=0, must-revalidate` as belt-and-suspenders): every page
+is entirely auth-gated and force-dynamic, so no rendered document is ever written
+to a shared intermediary cache or persisted in the browser's disk cache. This
+prevents the bank's reverse proxy handing one user's rendered page to another,
+and prevents an authed view being restored after logout or session expiry (it
+also disables the browser's back/forward cache, which for this app is intended).
+Only **content-hashed** static assets under `/_next/static/` are cacheable, and
+they carry `immutable, max-age=31536000` because their filenames change whenever
+their bytes do — so caching them long-term is safe. `Vary` advertises that the
+same URL's App-Router response differs for document vs. RSC-payload requests, so
+any cache that *does* run cannot cross-serve the two.
+
 ---
 
 ## 6. File handling
