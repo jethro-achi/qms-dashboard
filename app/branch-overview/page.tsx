@@ -1,10 +1,11 @@
 import { DashboardShell } from "@/components/dashboard-shell"
 import { AnalyticsFilterBar } from "@/components/analytics/analytics-filter-bar"
-import { FilterableBarCard } from "@/components/analytics/filterable-bar-card"
 import { InteractiveBarCard } from "@/components/analytics/interactive-bar-card"
+import { DrilldownBarCard } from "@/components/analytics/drilldown-bar-card"
 import { ReportError } from "@/components/analytics/report-bits"
 import { reportContext } from "@/lib/analytics/context"
 import { getBranchOverview } from "@/lib/analytics/reports"
+import { getBreakdown } from "@/lib/analytics/breakdown"
 
 export const dynamic = "force-dynamic"
 
@@ -23,7 +24,11 @@ export default async function BranchOverviewPage() {
 
   let body: React.ReactNode
   try {
-    const o = await getBranchOverview(filters, principal)
+    const [o, waitRows, serviceRows] = await Promise.all([
+      getBranchOverview(filters, principal),
+      getBreakdown({ metric: "avgWait", dimension: "branch", filters, principal }),
+      getBreakdown({ metric: "avgService", dimension: "branch", filters, principal }),
+    ])
     body = (
       <div className="grid gap-4 lg:grid-cols-2">
         <InteractiveBarCard
@@ -40,20 +45,21 @@ export default async function BranchOverviewPage() {
           aggregate="sum"
           exportColumns={TOTAL_SERVED_COLS.map((c) => (c.key === "label" ? { key: "label", header: "Day" } : c))}
         />
-        <InteractiveBarCard
+        {/* Drillable: start by branch, then break down by service / agent / etc. */}
+        <DrilldownBarCard
           title="Average Service Time per Branch"
-          data={o.service}
-          series={[{ key: "value", label: "Avg service time", color: "var(--chart-1)" }]}
-          aggregate="avg"
+          metric="avgService"
+          baseDimension="branch"
+          initialRows={serviceRows}
           valueSuffix=" min"
-          exportColumns={[{ key: "label", header: "Branch" }, { key: "value", header: "Avg Service (min)" }]}
         />
-        <FilterableBarCard
+        <DrilldownBarCard
           title="Average Waiting Time (Minutes) by Branch"
-          data={o.wait}
+          metric="avgWait"
+          baseDimension="branch"
+          initialRows={waitRows}
           orientation="horizontal"
           labelWidth={110}
-          exportColumns={[{ key: "label", header: "Branch" }, { key: "value", header: "Avg Wait (min)" }]}
         />
         <div className="lg:col-span-2">
           <InteractiveBarCard

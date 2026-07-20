@@ -25,6 +25,8 @@ const CreateSchema = z.object({
     .partial()
     .optional(),
   recipientIds: z.array(z.number().int().positive()).max(100).optional(),
+  emailRecipients: z.array(z.string().trim().email().max(320)).max(50).optional(),
+  emailNote: z.string().trim().max(1000).optional(),
 });
 
 async function gate() {
@@ -60,10 +62,13 @@ export async function POST(req: Request) {
     format: parsed.data.format as (typeof REPORT_FORMATS)[number],
     timing: parsed.data.timing,
     recipientIds: parsed.data.recipientIds,
+    emailRecipients: parsed.data.emailRecipients,
+    emailNote: parsed.data.emailNote,
   });
   await auditFromRequest(req, user.id, "REPORT_SCHEDULE", "report-schedule", {
     name: parsed.data.name, reportType: parsed.data.reportType, format: parsed.data.format,
     timing: parsed.data.timing, recipients: parsed.data.recipientIds?.length ?? 0,
+    emailRecipients: parsed.data.emailRecipients?.length ?? 0,
   });
   return NextResponse.json({ schedules: await listSchedules(user.id) }, { status: 201 });
 }

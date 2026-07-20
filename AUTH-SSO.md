@@ -12,7 +12,12 @@ handed to a bank's / NIRA's infosec team.
 |---|---|---|
 | **Local passwords** | App-managed credentials, Argon2id hashes | ✅ Yes (default) |
 | **LDAP / Active Directory** | User types their AD password into our form; we verify it by binding to the directory | ✅ Yes — see [DEPLOY-LDAP.md](DEPLOY-LDAP.md) |
-| **SSO (OIDC / SAML)** | User authenticates at the corporate Identity Provider; app never sees the password; click-through if already signed in | ❌ **Not yet** — the architecture is ready for it (§4) |
+| **SSO — OIDC (Microsoft Entra ID)** | User authenticates at Microsoft; app never sees the password; click-through if already signed in | ✅ Yes — set `AUTH_MICROSOFT_ENTRA_ID_ID` (runbook in §5) |
+| **SSO — SAML 2.0** | Same, for SAML-only IdPs (ADFS, etc.) | ⚙️ Via a bridge (§6) — only if the IdP is SAML-only |
+
+All three identity tiers can be enabled at once: a deployment can offer local
+passwords, LDAP, and the Microsoft SSO button simultaneously, and each user
+takes whichever path applies to them.
 
 **LDAP is not SSO.** They're often conflated because both "use Active Directory,"
 but the difference is material to a security review:
@@ -78,41 +83,96 @@ is a perfectly acceptable, widely-accepted posture.
 
 ---
 
-## 4. The path to true SSO
-
-### Recommended: OIDC (OpenID Connect)
+## 4. OIDC (Microsoft Entra ID) — how it's built
 
 Best fit for any client on **Microsoft 365 / Entra ID** (Azure AD) — which covers
-most banks — and works equally with Okta, Keycloak, Google Workspace, etc.
-Auth.js v5 (which this app already uses) supports OIDC providers first-class, so
-it drops into the **same provider list** as the existing Credentials/LDAP path.
+most banks — and the same Auth.js OIDC plumbing extends to Okta, Keycloak, Google
+Workspace, etc. It drops into the **same provider list** as the existing
+Credentials/LDAP path, so nothing downstream changed.
 
-**How it fits, concretely:**
+**What happens on a sign-in** (see [lib/auth.ts](lib/auth.ts)):
 
-1. Register the app in the IdP; it issues a **Client ID + secret** and you
-   register a redirect URI: `https://QMS-DASHBOARD/api/auth/callback/<provider>`.
-2. Add an OIDC provider block in [lib/auth.ts](lib/auth.ts) (e.g.
-   `next-auth/providers/microsoft-entra-id`, or a generic OIDC provider with the
-   issuer URL).
-3. In the sign-in callback, take the verified identity (the IdP's `email` /
-   `preferred_username`) and **look it up in `app_users`** to load role +
-   branches — the *exact same authorization step* the Credentials path already
-   does. No local user record → sign-in denied (fail-closed).
-4. Requires HTTPS (already available via the nginx `proxy` profile in
-   [DEPLOY.md](DEPLOY.md)) so session cookies are `Secure`.
+1. The user clicks **Sign in with Microsoft** on the login page (the button
+   appears only when `AUTH_MICROSOFT_ENTRA_ID_ID` is set). They authenticate at
+   Microsoft — with the org's own MFA / Conditional Access — and are redirected
+   back to `/api/auth/callback/microsoft-entra-id` with a signed token. **Our app
+   never sees the password.**
+2. The `signIn` callback takes the verified email (`email` → `preferred_username`
+   → `upn`, lower-cased) and **looks it up in `app_users`**. No active local
+   record → **sign-in is denied and audited** (`LOGIN_FAILURE`, reason
+   `no_user_or_inactive`), and the user is bounced back to `/login` with a clear
+   message. This is the *same fail-closed authorization gate* the password path
+   uses.
+3. The `jwt` callback loads **role + branch IDs from `app_users`** (never from
+   the token's group/role claims), writes them into the session JWT, resets the
+   lockout counter, stamps `last_login`, and audits `LOGIN_SUCCESS` (`via: sso`).
+4. Every downstream query enforces RLS from that session exactly as before.
 
-Net new work is a provider block + a profile→`app_users` mapping. Everything
-downstream (RBAC, RLS, audit, break-glass) is reused unchanged.
+**Least privilege by design:** the provider requests only `openid profile email`.
+We override the default profile step so the app makes **no Microsoft Graph call**
+and needs **no Graph permission** — identity comes straight from the ID-token
+claims. The Entra `sub`/`oid` is never used as the app identity; the local
+`app_users.id` is (via `token.uid`), so authorization can't be spoofed by a token.
 
-**Config shape (illustrative — not yet wired):**
+**Requires HTTPS** in production (so the session cookie is `Secure`) — available
+via the nginx `proxy` profile in [DEPLOY.md](DEPLOY.md).
+
+**Config:**
 ```ini
-# Entra ID / Azure AD
-AUTH_MICROSOFT_ENTRA_ID_ID=<client-id>
-AUTH_MICROSOFT_ENTRA_ID_SECRET=<client-secret>
+AUTH_MICROSOFT_ENTRA_ID_ID=<application-client-id>
+AUTH_MICROSOFT_ENTRA_ID_SECRET=<client-secret-value>
+# Pin to the tenant (omit → multi-tenant "common"; the app_users gate still
+# blocks strangers, but pin it in production):
 AUTH_MICROSOFT_ENTRA_ID_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0
 ```
 
-### Alternative: SAML 2.0
+---
+
+## 5. Setup runbook (Entra ID)
+
+**In the Microsoft Entra admin center** (or Azure Portal → Entra ID):
+
+1. **App registrations → New registration.**
+   - Name: e.g. *QMS Analytics Dashboard*.
+   - Supported account types: *Accounts in this organizational directory only*
+     (single tenant) for a bank.
+   - Redirect URI → platform **Web**:
+     `https://<your-domain>/api/auth/callback/microsoft-entra-id`
+     (for local testing you may also add `http://localhost:3000/api/auth/callback/microsoft-entra-id`).
+2. From the app's **Overview**, copy **Application (client) ID** and
+   **Directory (tenant) ID**.
+3. **Certificates & secrets → New client secret.** Copy the secret **Value**
+   (not the Secret ID) immediately — it's shown only once.
+4. **API permissions**: the defaults (`User.Read` / delegated `openid profile
+   email`) are enough; no admin consent for Graph is required because the app
+   requests only `openid profile email`.
+5. Put the three values in `.env` (see [.env.example](.env.example)):
+   ```ini
+   AUTH_MICROSOFT_ENTRA_ID_ID=<client id>
+   AUTH_MICROSOFT_ENTRA_ID_SECRET=<secret value>
+   AUTH_MICROSOFT_ENTRA_ID_ISSUER=https://login.microsoftonline.com/<tenant id>/v2.0
+   ```
+6. Rebuild/restart the app. The **Sign in with Microsoft** button now appears.
+
+**Provisioning users:** for each staff member, add an app user in **User
+Management** whose **email matches their Microsoft sign-in address (UPN)**, and
+set their role + branches there. Membership in an Entra/AD group grants nothing on
+its own — provisioning is explicit and audited (deliberate, for a bank).
+
+**Testing on your PC before the bank hands you a tenant:** create a **free
+Microsoft Entra tenant** (Microsoft 365 Developer Program, or a free Azure
+account → Entra ID), register the app with the `localhost` redirect URI above,
+add a test user in that tenant, then add a matching app user in User Management
+with the same email. Run the app over `http://localhost:3000` and click **Sign in
+with Microsoft** — you'll get the real "click → Microsoft → back in" flow.
+
+**Break-glass:** keep at least one **local-password super admin** (the account
+created at `/setup`). If the tenant, secret, or network to Microsoft is ever
+unavailable, that account still signs in via email + password.
+
+---
+
+## 6. Alternative: SAML 2.0
 
 The older enterprise standard; still common with **ADFS** and some banks. Auth.js
 core has no built-in SAML, so it needs an add-on — either a SAML library
@@ -128,13 +188,13 @@ benefit; OIDC gives ~the same UX for M365 users without the fragility.
 
 ---
 
-## 5. Recommendation
+## 7. Recommendation
 
-- Keep **local passwords** as the zero-dependency default.
+- Keep **local passwords** as the zero-dependency default and break-glass.
 - Keep **LDAP** for clients who want directory-backed auth without federation.
-- Add **OIDC** as the "proper SSO" option when a client asks for single sign-on
-  or forbids the app from handling AD passwords. Same pluggable pattern — the
-  client selects the tier by configuration alone.
+- Offer **OIDC (Entra ID)** as the "proper SSO" option — now built — when a
+  client asks for single sign-on or forbids the app from handling AD passwords.
+  Same pluggable pattern; the client selects the tier by configuration alone.
 
 Because the authorization layer is fixed and local, moving a client from
 passwords → LDAP → SSO is an operational change, not a re-architecture, and the

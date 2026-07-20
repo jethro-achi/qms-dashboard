@@ -51,16 +51,20 @@ describe("withTodayResolved — 'Default to today's data'", () => {
     });
   });
 
-  describe("app-wide default ON (per-user toggle is hidden)", () => {
-    it("forces today when the user has no stored choice", () => {
+  describe("app-wide default ON (a per-user starting value, not a lock)", () => {
+    it("starts a user with no stored choice on today", () => {
       expect(withTodayResolved({}, true).today).toBe(true);
     });
 
-    // The regression this guards: the toggle is hidden when the default is on,
-    // so honouring a stale `today: false` would strand the user on history with
-    // no way back. The admin default must win outright.
-    it("overrides a stale 'today: false' left in the cookie", () => {
-      expect(withTodayResolved({ today: false }, true).today).toBe(true);
+    // The whole point of the per-user model: the app-wide default only seeds
+    // users who haven't chosen. A user who turned Today OFF stays off — the
+    // super admin's setting never overrides their own choice.
+    it("respects a user's own 'today: false' over the app-wide default", () => {
+      expect(withTodayResolved({ today: false }, true).today).toBe(false);
+    });
+
+    it("respects a user's own 'today: true' too", () => {
+      expect(withTodayResolved({ today: true }, true).today).toBe(true);
     });
   });
 

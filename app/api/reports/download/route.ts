@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getUser, toPrincipal } from "@/lib/session";
-import { PERIOD_TYPES } from "@/lib/reports/period";
+import { PERIOD_TYPES, type ReportRangeType } from "@/lib/reports/period";
 import { assembleReport } from "@/lib/reports/assemble";
 import { reportToCsv, reportToXlsx, reportToPdf, MIME, type ReportFormat } from "@/lib/reports/format";
 
@@ -13,8 +13,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const Schema = z.object({
-  type: z.enum(PERIOD_TYPES as unknown as [string, ...string[]]),
-  value: z.string().min(1).max(20),
+  // The 4 recurring cadences plus "custom" (an arbitrary from–to range).
+  type: z.enum([...PERIOD_TYPES, "custom"] as unknown as [string, ...string[]]),
+  value: z.string().min(1).max(40),
   format: z.enum(["csv", "xlsx", "pdf"]),
 });
 
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
   const { type, value, format } = parsed.data;
 
   try {
-    const report = await assembleReport(type as (typeof PERIOD_TYPES)[number], value, toPrincipal(user));
+    const report = await assembleReport(type as ReportRangeType, value, toPrincipal(user));
     if (!report) return NextResponse.json({ error: "Invalid period." }, { status: 400 });
 
     const filename = `${safeName(`${report.title} - ${report.periodLabel}`)}.${format}`;

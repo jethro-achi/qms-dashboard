@@ -406,10 +406,10 @@ export function ThemeSettings({
               </Toggle>
             </div>
             <span className="text-xs text-muted-foreground">
-              When on, every dashboard and report opens scoped to today&apos;s tickets for
-              everyone, and the “Show today’s data” button is hidden — picking a date range
-              in the filter bar is then the way to view history. When off, the button
-              reappears and each user&apos;s own choice persists across pages.
+              Sets the STARTING state of the “Show today’s data” button for users who
+              haven’t chosen one yet. It does not lock anyone: the button stays visible for
+              everyone, and each user’s own choice is theirs alone and persists across pages.
+              Turn it on so new users open on today by default; off so they open on all history.
             </span>
           </div>
         </CardContent>

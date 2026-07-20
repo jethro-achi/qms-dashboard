@@ -7,7 +7,7 @@ import { getAppMetrics } from "../settings";
 import { getKpis, getHourlyTraffic, getFilterOptions } from "../analytics/queries";
 import { getTrafficSeries } from "../analytics/home";
 import { getStaffProductivity, getFeedback } from "../analytics/reports";
-import { periodToRange, type PeriodType } from "./period";
+import { resolveReportRange, type ReportRangeType } from "./period";
 import { reportByBranch, reportByService } from "./queries";
 
 export interface ReportTable {
@@ -26,11 +26,11 @@ export interface ReportData {
 }
 
 export async function assembleReport(
-  type: PeriodType,
+  type: ReportRangeType,
   value: string,
   principal: Principal,
 ): Promise<ReportData | null> {
-  const range = periodToRange(type, value);
+  const range = resolveReportRange(type, value);
   if (!range) return null;
   const filters = { dateFrom: range.dateFrom, dateTo: range.dateTo };
   const { slaWaitSeconds, slaServiceSeconds } = await getAppMetrics();
@@ -52,7 +52,8 @@ export async function assembleReport(
         .map((id) => options.branches.find((b) => b.id === id)?.name ?? id)
         .join(", ") || "No branches assigned";
 
-  const typeLabel = { daily: "Daily", monthly: "Monthly", quarterly: "Quarterly", annual: "Annual" }[type];
+  const typeLabel =
+    { daily: "Daily", monthly: "Monthly", quarterly: "Quarterly", annual: "Annual", custom: "Custom" }[type];
 
   const kpiList = [
     { label: "Total Traffic", value: kpis.totalTraffic.toLocaleString() },

@@ -11,5 +11,7 @@ export const dynamic = "force-dynamic";
 export default function LoginPage() {
   if (!isConfigured()) redirect("/setup");
   const logoSrc = hasLogo() ? `/api/branding/logo?v=${logoVersion()}` : null;
-  return <LoginForm logoSrc={logoSrc} />;
+  // Show the Microsoft SSO button only when Entra ID is configured.
+  const ssoEnabled = Boolean(process.env.AUTH_MICROSOFT_ENTRA_ID_ID);
+  return <LoginForm logoSrc={logoSrc} ssoEnabled={ssoEnabled} />;
 }

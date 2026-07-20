@@ -11,19 +11,46 @@ import { Input } from "@/components/ui/input"
 import { QmsIllustration } from "@/components/qms-illustration"
 import { PoweredBy } from "@/components/powered-by"
 
-export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
+export default function LoginForm({
+  logoSrc,
+  ssoEnabled = false,
+}: {
+  logoSrc?: string | null
+  ssoEnabled?: boolean
+}) {
   const router = useRouter()
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
+  const [ssoBusy, setSsoBusy] = React.useState(false)
   const [notice, setNotice] = React.useState<string | null>(null)
 
   React.useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("expired") === "1") {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("expired") === "1") {
       setNotice("Your session timed out for security. Please sign in again.")
     }
+    // Auth.js sends failed SSO sign-ins back here with ?error=. AccessDenied is
+    // our own "not provisioned" refusal; anything else is a config/IdP problem.
+    const err = params.get("error")
+    if (err === "AccessDenied") {
+      setError("This Microsoft account is not registered for the dashboard. Contact your administrator.")
+    } else if (err) {
+      setError("Single sign-on could not be completed. Please try again or use your email and password.")
+    }
   }, [])
+
+  function callbackUrl() {
+    return new URLSearchParams(window.location.search).get("callbackUrl") ?? "/dashboard"
+  }
+
+  async function onMicrosoft() {
+    setSsoBusy(true)
+    setError(null)
+    // Full-page redirect to Microsoft, then back to /api/auth/callback/...
+    await signIn("microsoft-entra-id", { callbackUrl: callbackUrl() })
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -35,8 +62,7 @@ export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
       setError("Sign-in failed. Check your email and password.")
       return
     }
-    const callbackUrl = new URLSearchParams(window.location.search).get("callbackUrl") ?? "/dashboard"
-    router.push(callbackUrl)
+    router.push(callbackUrl())
   }
 
   return (
@@ -65,6 +91,26 @@ export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
                   <p className="rounded-none border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-700 dark:text-amber-400">
                     {notice}
                   </p>
+                )}
+
+                {ssoEnabled && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={onMicrosoft}
+                      disabled={ssoBusy || busy}
+                      className="w-full"
+                    >
+                      <MicrosoftLogo className="mr-2 h-4 w-4" />
+                      {ssoBusy ? "Redirecting to Microsoft…" : "Sign in with Microsoft"}
+                    </Button>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className="h-px flex-1 bg-border" />
+                      or sign in with email
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  </>
                 )}
 
                 <Field>
@@ -116,5 +162,17 @@ export default function LoginForm({ logoSrc }: { logoSrc?: string | null }) {
         <PoweredBy />
       </div>
     </div>
+  )
+}
+
+// The Microsoft four-square mark (brand colours, fixed — not theme-dependent).
+function MicrosoftLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 21 21" aria-hidden="true" className={className}>
+      <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+      <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+      <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+      <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+    </svg>
   )
 }

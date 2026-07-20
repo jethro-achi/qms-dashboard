@@ -59,6 +59,39 @@ export function periodToRange(type: PeriodType, value: string): Range | null {
   return { dateFrom: `${value}-01-01`, dateTo: `${value}-12-31`, label: value };
 }
 
+// ---- custom (arbitrary from–to) range ---------------------------------------
+// Custom ranges are for ON-DEMAND reports only — never a recurring schedule
+// cadence (a fixed span can't repeat). Encoded as "YYYY-MM-DD..YYYY-MM-DD".
+export type ReportRangeType = PeriodType | "custom";
+
+// Cap the span so a single report can't scan an unbounded slice of the fact
+// table (a year is plenty for an operational report).
+const MAX_CUSTOM_DAYS = 366;
+
+/** Build the on-wire value for a custom range. */
+export function customValue(from: string, to: string): string {
+  return `${from}..${to}`;
+}
+
+/** Parse + validate a "YYYY-MM-DD..YYYY-MM-DD" custom range. null if invalid. */
+export function parseCustomRange(value: string): Range | null {
+  const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(value);
+  if (!m) return null;
+  const [, from, to] = m;
+  const df = new Date(`${from}T00:00:00`);
+  const dt = new Date(`${to}T00:00:00`);
+  if (isNaN(df.getTime()) || isNaN(dt.getTime()) || df > dt) return null;
+  const span = Math.round((dt.getTime() - df.getTime()) / 86_400_000) + 1;
+  if (span > MAX_CUSTOM_DAYS) return null;
+  const fmt = (d: Date) => d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return { dateFrom: from, dateTo: to, label: `${fmt(df)} – ${fmt(dt)}` };
+}
+
+/** Resolve any report range type (the 4 cadences + custom) to a date range. */
+export function resolveReportRange(type: ReportRangeType, value: string): Range | null {
+  return type === "custom" ? parseCustomRange(value) : periodToRange(type, value);
+}
+
 /** Enumerate the periods (newest first) between two dates, per type. */
 export function listPeriods(min: Date, max: Date): Record<PeriodType, PeriodOption[]> {
   const daily: PeriodOption[] = [];

@@ -31,6 +31,7 @@ export type AuditAction =
   | "SETTINGS_CHANGE"
   | "REPORT_SCHEDULE"
   | "REPORT_SHARE"
+  | "REPORT_EMAIL"
   | "ASSISTANT_QUERY";
 
 /** Human labels for each action, used by the audit viewer. */
@@ -50,6 +51,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   SETTINGS_CHANGE: "Changed settings",
   REPORT_SCHEDULE: "Report schedule",
   REPORT_SHARE: "Shared report",
+  REPORT_EMAIL: "Emailed report",
   ASSISTANT_QUERY: "Asked the AI assistant",
 };
 

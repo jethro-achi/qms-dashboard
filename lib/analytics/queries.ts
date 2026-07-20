@@ -251,20 +251,29 @@ export async function getTrafficTrend(
 ): Promise<Trend> {
   const { clause, params } = buildWhere(filters, principal);
   const { mode, tickets } = await qmsSource();
-  const midExpr = `(SELECT DATE_ADD(MIN(t2.createdAt),
-        INTERVAL TIMESTAMPDIFF(SECOND, MIN(t2.createdAt), MAX(t2.createdAt)) / 2 SECOND)
-      FROM ${tickets} t2 ${clause})`;
-  const rows = await cached(analyticsKey("trend", filters, principal, [mode]), () =>
-    qmsQuery<TrendRow>(
-    `SELECT
-        SUM(t.createdAt >= ${midExpr}) AS recent,
-        SUM(t.createdAt <  ${midExpr}) AS earlier
-       FROM ${tickets} t
-       ${clause}`,
-    // midExpr appears twice (each with its own WHERE params), then the outer WHERE.
-    [...params, ...params, ...params],
-    mode,
-  ));
+  // Two cheap passes instead of one catastrophic one. The previous version
+  // inlined the MIN/MAX subquery inside the per-row SUM(), which MySQL re-ran for
+  // every row — O(N^2), stalling for minutes on large tables. Here the range
+  // midpoint is computed ONCE (MIN/MAX use idx_bt_created), then a single scan
+  // splits rows either side of it. Same `t` alias throughout so the WHERE clause
+  // (which references t.createdAt) is valid in both statements.
+  const rows = await cached(analyticsKey("trend", filters, principal, [mode]), async () => {
+    const midRows = await qmsQuery<RowDataPacket & { mid: unknown }>(
+      `SELECT DATE_ADD(MIN(t.createdAt),
+              INTERVAL TIMESTAMPDIFF(SECOND, MIN(t.createdAt), MAX(t.createdAt)) / 2 SECOND) AS mid
+         FROM ${tickets} t ${clause}`,
+      params,
+      mode,
+    );
+    const mid = midRows[0]?.mid;
+    if (mid == null) return [{ recent: 0, earlier: 0 }] as TrendRow[];
+    return qmsQuery<TrendRow>(
+      `SELECT SUM(t.createdAt >= ?) AS recent, SUM(t.createdAt < ?) AS earlier
+         FROM ${tickets} t ${clause}`,
+      [mid, mid, ...params],
+      mode,
+    );
+  });
   const recent = Number(rows[0]?.recent ?? 0);
   const earlier = Number(rows[0]?.earlier ?? 0);
   if (earlier === 0) return { direction: recent > 0 ? "up" : "flat", pct: recent > 0 ? 100 : 0 };

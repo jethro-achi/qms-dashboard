@@ -9,12 +9,15 @@
 import { appQuery, appTransaction } from "../db";
 import type { TxContext } from "../db-adapters";
 import type { Principal, Role } from "../rbac";
-import { isRole } from "../rbac";
+import { isRole, roleDescription, ROLE_LABELS } from "../rbac";
 import { ensureAppMigrations } from "../migrate";
-import { assembleReport } from "./assemble";
-import { renderReport, type ReportFormat } from "./format";
+import { assembleReport, type ReportData } from "./assemble";
+import { renderReport, MIME, type ReportFormat } from "./format";
 import { periodToRange, type PeriodType } from "./period";
 import { newFileKey, writeReportFile, deleteReportFile } from "./storage";
+import { isMailConfigured, sendMail, normalizeEmails } from "./mailer";
+import { composeReportEmail, firstName, greetingFromEmail } from "./email-report";
+import { audit } from "../audit";
 
 export const REPORT_FORMATS: readonly ReportFormat[] = ["pdf", "xlsx", "csv"];
 
@@ -36,6 +39,10 @@ export interface Schedule {
   dayOfMonth: number;
   monthOfYear: number;
   recipients: Recipient[];
+  /** External email addresses this schedule also emails the report to. */
+  emailRecipients: string[];
+  /** Optional free-text intro included in the delivery email body. */
+  emailNote: string | null;
   nextRunAt: string;
   lastRunAt: string | null;
   createdAt: string;
@@ -268,12 +275,13 @@ interface ScheduleRow {
   run_minute: number;
   day_of_month: number;
   month_of_year: number;
+  email_note: string | null;
   next_run_at: unknown;
   last_run_at: unknown;
   created_at: unknown;
 }
 
-function mapSchedule(r: ScheduleRow, recipients: Recipient[]): Schedule {
+function mapSchedule(r: ScheduleRow, recipients: Recipient[], emailRecipients: string[]): Schedule {
   return {
     id: Number(r.id),
     name: r.name,
@@ -285,6 +293,8 @@ function mapSchedule(r: ScheduleRow, recipients: Recipient[]): Schedule {
     dayOfMonth: Number(r.day_of_month ?? 1),
     monthOfYear: Number(r.month_of_year ?? 1),
     recipients,
+    emailRecipients,
+    emailNote: r.email_note ?? null,
     nextRunAt: toIso(r.next_run_at),
     lastRunAt: r.last_run_at ? toIso(r.last_run_at) : null,
     createdAt: toIso(r.created_at),
@@ -295,7 +305,7 @@ export async function listSchedules(userId: number): Promise<Schedule[]> {
   await ensureAppMigrations();
   const rows = await appQuery<ScheduleRow>(
     `SELECT id, name, report_type, format, is_active,
-            run_hour, run_minute, day_of_month, month_of_year,
+            run_hour, run_minute, day_of_month, month_of_year, email_note,
             next_run_at, last_run_at, created_at
        FROM app_report_schedules WHERE user_id = ? ORDER BY created_at DESC`,
     [userId],
@@ -314,7 +324,21 @@ export async function listSchedules(userId: number): Promise<Schedule[]> {
     list.push({ id: Number(r.user_id), name: r.full_name, email: r.email });
     bySchedule.set(Number(r.schedule_id), list);
   }
-  return rows.map((r) => mapSchedule(r, bySchedule.get(Number(r.id)) ?? []));
+  // External email recipients, grouped the same way.
+  const emailRows = await appQuery<{ schedule_id: number; email: string }>(
+    `SELECT schedule_id, email FROM app_report_email_recipients
+      WHERE schedule_id IN (SELECT id FROM app_report_schedules WHERE user_id = ?)`,
+    [userId],
+  );
+  const emailsBySchedule = new Map<number, string[]>();
+  for (const r of emailRows) {
+    const list = emailsBySchedule.get(Number(r.schedule_id)) ?? [];
+    list.push(r.email);
+    emailsBySchedule.set(Number(r.schedule_id), list);
+  }
+  return rows.map((r) =>
+    mapSchedule(r, bySchedule.get(Number(r.id)) ?? [], emailsBySchedule.get(Number(r.id)) ?? []),
+  );
 }
 
 export interface CreateScheduleInput {
@@ -323,6 +347,10 @@ export interface CreateScheduleInput {
   format: ReportFormat;
   timing?: Partial<ScheduleTiming>;
   recipientIds?: number[];
+  /** External email addresses to send the report to (validated + de-duped). */
+  emailRecipients?: string[];
+  /** Optional free-text intro line included in the delivery email. */
+  emailNote?: string | null;
 }
 
 export async function createSchedule(userId: number, input: CreateScheduleInput): Promise<void> {
@@ -330,21 +358,71 @@ export async function createSchedule(userId: number, input: CreateScheduleInput)
   const timing = normalizeTiming(input.timing);
   const next = computeNextRun(input.reportType, timing, new Date());
   const recipientIds = await adminIdsAmong(input.recipientIds ?? []); // RBAC: admins only
+  const emails = normalizeEmails(input.emailRecipients ?? []).slice(0, 50);
+  const note = (input.emailNote ?? "").trim().slice(0, 1000) || null;
   await appTransaction(async (tx) => {
     await tx.query(
       `INSERT INTO app_report_schedules
-         (user_id, name, report_type, format, is_active, run_hour, run_minute, day_of_month, month_of_year, next_run_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+         (user_id, name, report_type, format, is_active, run_hour, run_minute, day_of_month, month_of_year, email_note, next_run_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
       [
         userId, safeName(input.name).trim() || "Report", input.reportType, input.format,
-        timing.runHour, timing.runMinute, timing.dayOfMonth, timing.monthOfYear, sqlDt(next),
+        timing.runHour, timing.runMinute, timing.dayOfMonth, timing.monthOfYear, note, sqlDt(next),
       ],
     );
     const id = await lastInsertId(tx);
     for (const rid of recipientIds) {
       await tx.query("INSERT INTO app_report_recipients (schedule_id, user_id) VALUES (?, ?)", [id, rid]);
     }
+    for (const email of emails) {
+      await tx.query("INSERT INTO app_report_email_recipients (schedule_id, email) VALUES (?, ?)", [id, email]);
+    }
   });
+}
+
+/**
+ * Edit an existing schedule the caller owns: name, cadence, format, timing,
+ * recipients (internal + external), and the email note. Recipients are fully
+ * replaced with the given sets. next_run_at is recomputed from the new cadence/
+ * timing; is_active is left untouched. Returns false if the caller doesn't own it.
+ */
+export async function updateSchedule(userId: number, id: number, input: CreateScheduleInput): Promise<boolean> {
+  await ensureAppMigrations();
+  const owns = await appQuery<{ id: number }>(
+    "SELECT id FROM app_report_schedules WHERE id = ? AND user_id = ?",
+    [id, userId],
+  );
+  if (owns.length === 0) return false;
+
+  const timing = normalizeTiming(input.timing);
+  const next = computeNextRun(input.reportType, timing, new Date());
+  const recipientIds = await adminIdsAmong(input.recipientIds ?? []); // RBAC: admins only
+  const emails = normalizeEmails(input.emailRecipients ?? []).slice(0, 50);
+  const note = (input.emailNote ?? "").trim().slice(0, 1000) || null;
+
+  await appTransaction(async (tx) => {
+    await tx.query(
+      `UPDATE app_report_schedules
+          SET name = ?, report_type = ?, format = ?, run_hour = ?, run_minute = ?,
+              day_of_month = ?, month_of_year = ?, email_note = ?, next_run_at = ?
+        WHERE id = ? AND user_id = ?`,
+      [
+        safeName(input.name).trim() || "Report", input.reportType, input.format,
+        timing.runHour, timing.runMinute, timing.dayOfMonth, timing.monthOfYear, note, sqlDt(next),
+        id, userId,
+      ],
+    );
+    // Replace recipient sets wholesale.
+    await tx.query("DELETE FROM app_report_recipients WHERE schedule_id = ?", [id]);
+    for (const rid of recipientIds) {
+      await tx.query("INSERT INTO app_report_recipients (schedule_id, user_id) VALUES (?, ?)", [id, rid]);
+    }
+    await tx.query("DELETE FROM app_report_email_recipients WHERE schedule_id = ?", [id]);
+    for (const email of emails) {
+      await tx.query("INSERT INTO app_report_email_recipients (schedule_id, email) VALUES (?, ?)", [id, email]);
+    }
+  });
+  return true;
 }
 
 export async function setScheduleActive(userId: number, id: number, active: boolean): Promise<void> {
@@ -444,10 +522,137 @@ export async function shareReport(userId: number, reportId: number, recipientIds
   return added;
 }
 
+export interface GenerateResult {
+  size: number;
+  reportId: number;
+  /** Number of addresses the report was emailed to (0 if email is off/none). */
+  emailed: number;
+  /** Set when email was attempted but failed — the report is still stored. */
+  emailError?: string;
+}
+
+/**
+ * Email a freshly-generated report to a schedule's recipients (external
+ * addresses + the internal app-users). Best-effort: never throws — email is
+ * additive to the always-succeeding in-app delivery. Returns how many addresses
+ * were reached (0 = email off or no recipients) and any error to surface.
+ */
+async function deliverReportEmail(args: {
+  scheduleId: number;
+  ownerUserId: number;
+  ownerRole: Role;
+  report: ReportData;
+  buffer: Buffer;
+  format: ReportFormat;
+  displayName: string;
+}): Promise<{ emailed: number; error?: string }> {
+  if (!isMailConfigured()) return { emailed: 0 };
+  try {
+    const [extRows, intRows, ownerRows, schedRows] = await Promise.all([
+      appQuery<{ email: string }>(
+        "SELECT email FROM app_report_email_recipients WHERE schedule_id = ?",
+        [args.scheduleId],
+      ),
+      appQuery<{ email: string; full_name: string }>(
+        `SELECT u.email, u.full_name FROM app_report_recipients rr
+           JOIN app_users u ON u.id = rr.user_id
+          WHERE rr.schedule_id = ?`,
+        [args.scheduleId],
+      ),
+      appQuery<{ full_name: string; email: string }>(
+        "SELECT full_name, email FROM app_users WHERE id = ?",
+        [args.ownerUserId],
+      ),
+      appQuery<{ email_note: string | null }>(
+        "SELECT email_note FROM app_report_schedules WHERE id = ?",
+        [args.scheduleId],
+      ),
+    ]);
+
+    // Map each recipient address to a greeting name. Internal app-users use their
+    // system first name; external addresses derive one from the local-part. A
+    // system name wins if the same address is in both lists.
+    const nameByEmail = new Map<string, string>();
+    for (const r of extRows) {
+      const [e] = normalizeEmails([r.email]);
+      if (e && !nameByEmail.has(e)) nameByEmail.set(e, greetingFromEmail(e));
+    }
+    for (const r of intRows) {
+      const [e] = normalizeEmails([r.email]);
+      if (e) nameByEmail.set(e, firstName(r.full_name) || greetingFromEmail(e));
+    }
+    if (nameByEmail.size === 0) return { emailed: 0 };
+
+    // Replies go to the schedule OWNER, not the shared service mailbox. From
+    // stays as SMTP_FROM (kept aligned with SPF/DKIM for deliverability); only
+    // Reply-To carries the person, with their name for a friendly reply header.
+    const ownerName = ownerRows[0]?.full_name ?? "";
+    const ownerEmail = (ownerRows[0]?.email ?? "").trim();
+    const replyTo =
+      normalizeEmails([ownerEmail]).length > 0
+        ? ownerName
+          ? `${ownerName} <${ownerEmail}>`
+          : ownerEmail
+        : undefined;
+
+    const base = {
+      reportTitle: args.report.title,
+      periodLabel: args.report.periodLabel,
+      scopeLabel: args.report.scopeLabel,
+      senderName: ownerRows[0]?.full_name ?? "QMS Analytics Dashboard",
+      // Role rendered as the app shows it, e.g. "Nakawa Branch Operations".
+      senderRole: roleDescription(args.ownerRole, args.report.scopeLabel) ?? ROLE_LABELS[args.ownerRole],
+      format: args.format,
+      note: schedRows[0]?.email_note ?? null,
+    };
+    const attachment = { filename: args.displayName, content: args.buffer, contentType: MIME[args.format] };
+
+    // One email per recipient, so each gets a personalised "Dear {name}," greeting
+    // and recipients never see each other's addresses. A bad address doesn't stop
+    // the rest.
+    let emailed = 0;
+    let firstErr: string | undefined;
+    for (const [email, name] of nameByEmail) {
+      const composed = composeReportEmail({ ...base, recipientName: name });
+      try {
+        await sendMail({
+          to: [email],
+          subject: composed.subject,
+          text: composed.text,
+          html: composed.html,
+          replyTo,
+          attachments: [attachment],
+        });
+        emailed += 1;
+      } catch (e) {
+        if (!firstErr) firstErr = (e as Error).message;
+      }
+    }
+
+    // Audit the batch: who sent what to how many recipients (count only — no
+    // addresses — to keep PII out of the trail).
+    if (emailed > 0) {
+      await audit({
+        userId: args.ownerUserId,
+        action: "REPORT_EMAIL",
+        resource: `schedule:${args.scheduleId}`,
+        details: { recipients: emailed, period: args.report.periodLabel, format: args.format },
+        ip: null,
+        userAgent: null,
+      }).catch(() => { /* audit must never break delivery */ });
+    }
+    return { emailed, error: emailed === 0 ? firstErr : undefined };
+  } catch (e) {
+    return { emailed: 0, error: (e as Error).message };
+  }
+}
+
 /**
  * Assemble + render a report for (type, value) under `principal`, persist the
- * file, and record it. Returns the generated file's byte size, or null if the
- * period was invalid / produced nothing.
+ * file, record it, share it in-app, and — for a scheduled run with email
+ * configured — email it to the schedule's recipients. Returns the stored size,
+ * the new report id, and how many addresses were emailed; null if the period was
+ * invalid / produced nothing. Emailing never fails the generation.
  */
 export async function generateAndStore(args: {
   userId: number;
@@ -456,7 +661,7 @@ export async function generateAndStore(args: {
   type: PeriodType;
   value: string;
   format: ReportFormat;
-}): Promise<number | null> {
+}): Promise<GenerateResult | null> {
   const report = await assembleReport(args.type, args.value, args.principal);
   if (!report) return null;
   const buf = await renderReport(report, args.format);
@@ -464,6 +669,7 @@ export async function generateAndStore(args: {
   writeReportFile(fileKey, buf);
   const displayName = `${safeName(`${report.title} - ${report.periodLabel}`)}.${args.format}`;
 
+  let reportId = 0;
   try {
     await appTransaction(async (tx) => {
       await tx.query(
@@ -480,7 +686,7 @@ export async function generateAndStore(args: {
           "SELECT id FROM app_generated_reports WHERE file_key = ?",
           [fileKey],
         );
-        const reportId = Number(idRows[0]?.id);
+        reportId = Number(idRows[0]?.id);
         const recs = await tx.query<{ user_id: number }>(
           "SELECT user_id FROM app_report_recipients WHERE schedule_id = ?",
           [args.scheduleId],
@@ -494,7 +700,81 @@ export async function generateAndStore(args: {
     deleteReportFile(fileKey); // don't leave an orphan file if the row failed
     throw e;
   }
-  return buf.length;
+
+  // Email delivery happens AFTER the row is committed, so a mail-server hiccup
+  // can never roll back a successfully generated + stored report.
+  let emailed = 0;
+  let emailError: string | undefined;
+  if (args.scheduleId != null) {
+    const res = await deliverReportEmail({
+      scheduleId: args.scheduleId,
+      ownerUserId: args.userId,
+      ownerRole: args.principal.role,
+      report,
+      buffer: buf,
+      format: args.format,
+      displayName,
+    });
+    emailed = res.emailed;
+    emailError = res.error;
+  }
+
+  return { size: buf.length, reportId, emailed, emailError };
+}
+
+/**
+ * Generate + deliver a schedule's report RIGHT NOW (the "Send now / test"
+ * action), using the most recently completed period for its cadence — the same
+ * period the next scheduled tick would produce. Ownership-checked. Does NOT
+ * advance next_run_at (this is out-of-band from the cron cadence).
+ */
+export interface RunNowResult {
+  ok: boolean;
+  error?: string;
+  periodLabel?: string;
+  emailed?: number;
+  emailConfigured?: boolean;
+  emailError?: string;
+}
+
+export async function runScheduleNow(
+  userId: number,
+  scheduleId: number,
+  now = new Date(),
+): Promise<RunNowResult> {
+  await ensureAppMigrations();
+  const rows = await appQuery<{ id: number; report_type: string; format: string }>(
+    "SELECT id, report_type, format FROM app_report_schedules WHERE id = ? AND user_id = ?",
+    [scheduleId, userId],
+  );
+  const s = rows[0];
+  if (!s) return { ok: false, error: "Schedule not found." };
+
+  const principal = await principalForUser(userId);
+  if (!principal) return { ok: false, error: "Your account is not active." };
+
+  const type = s.report_type as PeriodType;
+  const value = periodValueBefore(type, now);
+  const range = periodToRange(type, value);
+  if (!range) return { ok: false, error: "No completed period to generate yet." };
+
+  const result = await generateAndStore({
+    userId,
+    scheduleId: Number(s.id),
+    principal,
+    type,
+    value,
+    format: s.format as ReportFormat,
+  });
+  if (!result) return { ok: false, error: `No data for ${range.label}, so the report was empty.` };
+
+  return {
+    ok: true,
+    periodLabel: range.label,
+    emailed: result.emailed,
+    emailConfigured: isMailConfigured(),
+    emailError: result.emailError,
+  };
 }
 
 // ---- the cron worker ---------------------------------------------------------
@@ -530,7 +810,7 @@ export async function runDueSchedules(now = new Date()): Promise<{ due: number; 
       }
       const value = periodValueBefore(type, runFrom);
       if (periodToRange(type, value)) {
-        const size = await generateAndStore({
+        const result = await generateAndStore({
           userId: Number(s.user_id),
           scheduleId: Number(s.id),
           principal,
@@ -538,7 +818,7 @@ export async function runDueSchedules(now = new Date()): Promise<{ due: number; 
           value,
           format: s.format as ReportFormat,
         });
-        if (size !== null) generated++;
+        if (result !== null) generated++;
       }
     } catch {
       errors++;

@@ -11,6 +11,8 @@ import {
 export interface BarDatum {
   label: string
   value: number
+  /** Optional stable id, used by drill-down to identify the clicked category. */
+  key?: string
 }
 
 const config = {
@@ -32,16 +34,22 @@ export function SimpleBarChart({
   height = 260,
   valueSuffix = "",
   labelWidth = 130,
+  onBarClick,
 }: {
   data: BarDatum[]
   orientation?: "horizontal" | "vertical"
   height?: number
   valueSuffix?: string
   labelWidth?: number
+  /** When set, bars become clickable and this fires with the clicked datum. */
+  onBarClick?: (d: BarDatum) => void
 }) {
   if (data.length === 0) {
     return <p className="py-10 text-center text-sm text-muted-foreground">No data for these filters.</p>
   }
+  // Look the datum up by index (reliable) rather than trusting Recharts' payload.
+  const barClick = onBarClick ? (_: unknown, index: number) => { if (data[index]) onBarClick(data[index]) } : undefined
+  const barCursor = onBarClick ? "cursor-pointer" : undefined
 
   return (
     <ChartContainer config={config} className="w-full" style={{ height }}>
@@ -58,7 +66,7 @@ export function SimpleBarChart({
           />
           <XAxis dataKey="value" type="number" hide />
           <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dashed" />} />
-          <Bar dataKey="value" fill="var(--color-value)" radius={5}>
+          <Bar dataKey="value" fill="var(--color-value)" radius={5} onClick={barClick} className={barCursor}>
             <LabelList dataKey="value" position="right" offset={8} className="fill-foreground" fontSize={12}
               formatter={(v: number) => `${v}${valueSuffix}`} />
           </Bar>
@@ -70,7 +78,7 @@ export function SimpleBarChart({
             tickFormatter={(v: string) => truncate(v, 12)} />
           <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dashed" />} />
           {/* Cap width so a chart with only one or two bars doesn't render huge slabs. */}
-          <Bar dataKey="value" fill="var(--color-value)" radius={6} maxBarSize={48}>
+          <Bar dataKey="value" fill="var(--color-value)" radius={6} maxBarSize={48} onClick={barClick} className={barCursor}>
             <LabelList position="top" offset={10} className="fill-foreground" fontSize={12}
               formatter={(v: number) => `${v}${valueSuffix}`} />
           </Bar>

@@ -92,81 +92,111 @@ INSERT INTO counters (id, userId, available) VALUES
   ('counter-7','user-7',1), ('counter-8','user-8',1), ('counter-9','user-9',0),
   ('counter-10','user-10',1);
 
--- ---- Fact table: generate tickets over the last 90 days ---------------------
+-- ---- Fact table: generate tickets over the last 90 days --------------------
+-- The data is generated with a DELIBERATE TREND so the dashboard's KPI cards
+-- have something to compare against — the "vs last month" and "vs yesterday"
+-- deltas are computed as last-30-days vs the prior-30 and latest-day vs the day
+-- before (see lib/analytics/home.ts). Uniform-random data makes those deltas
+-- read flat/"—"; the shape below makes them move in the DESIRABLE direction:
+--   * volume RISES toward today          -> "Customers Served" up
+--   * wait & service caps SHRINK toward today -> waits/service improving
+--   * SLA compliance therefore rises (shorter waits fall under the target)
+--   * satisfaction skews higher on recent days
+-- It iterates day-by-day (0 = today … 89 = oldest) so every day is populated
+-- and the latest day is always "today", which is what the trend anchors to.
 DROP PROCEDURE IF EXISTS seed_tickets;
 DELIMITER $$
-CREATE PROCEDURE seed_tickets(IN total INT)
+CREATE PROCEDURE seed_tickets()
 BEGIN
-  DECLARE i INT DEFAULT 1;
+  DECLARE d INT DEFAULT 0;          -- days ago: 0 = today, 89 = oldest
+  DECLARE j INT;
+  DECLARE day_count INT;
+  DECLARE gid BIGINT DEFAULT 0;     -- monotonic ticket id
+  DECLARE v_day DATE;
   DECLARE v_created DATETIME;
   DECLARE v_status VARCHAR(16);
   DECLARE v_wait INT;
   DECLARE v_serve INT;
   DECLARE v_rate TINYINT;
   DECLARE r DOUBLE;
+  DECLARE wait_cap INT;
+  DECLARE serve_cap INT;
   SET autocommit = 0;
-  WHILE i <= total DO
-    -- Random day in the last 90, weighted to business hours (08:00–16:59).
-    SET v_created = DATE(DATE_SUB(NOW(), INTERVAL FLOOR(RAND() * 90) DAY));
-    SET v_created = DATE_ADD(v_created, INTERVAL (8 + FLOOR(RAND() * 9)) HOUR);
-    SET v_created = DATE_ADD(v_created, INTERVAL FLOOR(RAND() * 60) MINUTE);
+  WHILE d < 90 DO
+    SET v_day = DATE_SUB(CURDATE(), INTERVAL d DAY);
+    -- Volume grows toward today: ~400/day (90 days ago) to ~900/day (today), with
+    -- day-to-day jitter so the "vs yesterday" delta has real movement too.
+    SET day_count = GREATEST(150, ROUND(400 + (90 - d) * 5.5 + (RAND() - 0.5) * 120));
+    -- Duration caps SHRINK toward today, so recent waits/service are shorter.
+    SET wait_cap  = 300 + d * 8;    -- today ~300s (5 min), 90d ago ~1012s
+    SET serve_cap = 200 + d * 6;    -- today ~200s,        90d ago ~734s
+    SET j = 0;
+    WHILE j < day_count DO
+      SET gid = gid + 1;
+      -- Weighted to business hours (08:00–16:59).
+      SET v_created = DATE_ADD(v_day,     INTERVAL (8 + FLOOR(RAND() * 9)) HOUR);
+      SET v_created = DATE_ADD(v_created, INTERVAL FLOOR(RAND() * 60) MINUTE);
+      SET v_created = DATE_ADD(v_created, INTERVAL FLOOR(RAND() * 60) SECOND);
 
-    SET r = RAND();
-    SET v_status = CASE
-      WHEN r < 0.80 THEN 'Served'
-      WHEN r < 0.90 THEN 'Not Served'
-      WHEN r < 0.96 THEN 'Waiting'
-      ELSE 'Serving' END;
+      SET r = RAND();
+      SET v_status = CASE
+        WHEN r < 0.82 THEN 'Served'
+        WHEN r < 0.92 THEN 'Not Served'
+        WHEN r < 0.97 THEN 'Waiting'
+        ELSE 'Serving' END;
 
-    -- Wait skews low (mean ~a few min); occasional very long service = an
-    -- "exception" so that report isn't empty.
-    SET v_wait = FLOOR(RAND() * RAND() * 1500);
-    IF RAND() < 0.03 THEN
-      SET v_serve = 3700 + FLOOR(RAND() * 3600);
-    ELSE
-      SET v_serve = 90 + FLOOR(RAND() * RAND() * 1200);
-    END IF;
+      SET v_wait = FLOOR(RAND() * wait_cap);
+      IF RAND() < 0.03 THEN
+        SET v_serve = 3700 + FLOOR(RAND() * 3600);   -- rare "exception" service
+      ELSE
+        SET v_serve = 60 + FLOOR(RAND() * serve_cap);
+      END IF;
 
-    SET r = RAND();
-    SET v_rate = CASE
-      WHEN r < 0.60 THEN NULL
-      WHEN r < 0.72 THEN 3
-      WHEN r < 0.86 THEN 4
-      ELSE 5 END;
+      -- Satisfaction improves toward today (recent days skew to 4–5 stars).
+      SET r = RAND();
+      IF d < 30 THEN
+        SET v_rate = CASE WHEN r < 0.45 THEN NULL WHEN r < 0.55 THEN 3 WHEN r < 0.72 THEN 4 ELSE 5 END;
+      ELSEIF d < 60 THEN
+        SET v_rate = CASE WHEN r < 0.55 THEN NULL WHEN r < 0.70 THEN 3 WHEN r < 0.87 THEN 4 ELSE 5 END;
+      ELSE
+        SET v_rate = CASE WHEN r < 0.60 THEN NULL WHEN r < 0.80 THEN 3 WHEN r < 0.93 THEN 4 ELSE 5 END;
+      END IF;
 
-    INSERT INTO banktickets
-      (id, ticketNo, branchId, queueId, counterId, ticketStatus, issueDescription,
-       rating, ratingComment, createdAt, notServedAt, servingAt, servedAt,
-       notServedDuration, servingDuration, totalDuration)
-    VALUES (
-      i,
-      CONCAT('T', LPAD(i, 6, '0')),
-      CONCAT('branch-', 1 + FLOOR(RAND() * 5)),
-      CONCAT('queue-',  1 + FLOOR(RAND() * 6)),
-      CONCAT('counter-',1 + FLOOR(RAND() * 10)),
-      v_status,
-      ELT(1 + FLOOR(RAND() * 6),
-          'New Registration','Renewal','Correction','Card Collection','Enquiry','Payment'),
-      v_rate,
-      CASE WHEN v_rate IS NULL THEN NULL
-           WHEN v_rate <= 3 THEN ELT(1 + FLOOR(RAND() * 3), 'Long wait time','Slow service','Confusing process')
-           ELSE ELT(1 + FLOOR(RAND() * 3), 'Very helpful staff','Quick and easy','Friendly service') END,
-      v_created,
-      v_created,
-      CASE WHEN v_status IN ('Serving','Served') THEN DATE_ADD(v_created, INTERVAL v_wait SECOND) END,
-      CASE WHEN v_status = 'Served' THEN DATE_ADD(v_created, INTERVAL v_wait + v_serve SECOND) END,
-      v_wait,
-      CASE WHEN v_status = 'Served' THEN v_serve END,
-      CASE WHEN v_status = 'Served' THEN v_wait + v_serve END
-    );
-    SET i = i + 1;
+      INSERT INTO banktickets
+        (id, ticketNo, branchId, queueId, counterId, ticketStatus, issueDescription,
+         rating, ratingComment, createdAt, notServedAt, servingAt, servedAt,
+         notServedDuration, servingDuration, totalDuration)
+      VALUES (
+        gid,
+        CONCAT('T', LPAD(gid, 6, '0')),
+        CONCAT('branch-', 1 + FLOOR(RAND() * 5)),
+        CONCAT('queue-',  1 + FLOOR(RAND() * 6)),
+        CONCAT('counter-',1 + FLOOR(RAND() * 10)),
+        v_status,
+        ELT(1 + FLOOR(RAND() * 6),
+            'New Registration','Renewal','Correction','Card Collection','Enquiry','Payment'),
+        v_rate,
+        CASE WHEN v_rate IS NULL THEN NULL
+             WHEN v_rate <= 3 THEN ELT(1 + FLOOR(RAND() * 3), 'Long wait time','Slow service','Confusing process')
+             ELSE ELT(1 + FLOOR(RAND() * 3), 'Very helpful staff','Quick and easy','Friendly service') END,
+        v_created,
+        v_created,
+        CASE WHEN v_status IN ('Serving','Served') THEN DATE_ADD(v_created, INTERVAL v_wait SECOND) END,
+        CASE WHEN v_status = 'Served' THEN DATE_ADD(v_created, INTERVAL v_wait + v_serve SECOND) END,
+        v_wait,
+        CASE WHEN v_status = 'Served' THEN v_serve END,
+        CASE WHEN v_status = 'Served' THEN v_wait + v_serve END
+      );
+      SET j = j + 1;
+    END WHILE;
+    SET d = d + 1;
   END WHILE;
   COMMIT;
   SET autocommit = 1;
 END$$
 DELIMITER ;
 
-CALL seed_tickets(15000);
+CALL seed_tickets();
 DROP PROCEDURE seed_tickets;
 
 -- ---- Activity logs: login/logout per agent for the last 30 days -------------
